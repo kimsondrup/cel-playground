@@ -28,6 +28,7 @@ var input = map[string]any{
 		"replicas": 2,
 		"href":     "https://user:pass@example.com:80/path?query=val#fragment",
 		"image":    "registry.com/image:v0.0.0",
+		"tag":      "v0.0.0",
 		"items":    []int{1, 2, 3},
 		"abc":      []string{"a", "b", "c"},
 		"memory":   "1.3G",
@@ -96,6 +97,11 @@ func TestEval(t *testing.T) {
 		{
 			name: "split",
 			exp:  "object.image.split(':').size() == 2",
+			want: true,
+		},
+		{
+			name: "semver",
+			exp:  `semver(object.image.split(':')[1], true).isLessThan(semver('v1.0.0', true))`,
 			want: true,
 		},
 		{
