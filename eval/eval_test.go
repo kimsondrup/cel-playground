@@ -173,6 +173,44 @@ func TestEval(t *testing.T) {
 				},
 			},
 		},
+
+		// The cases below pin behavior that changed when cel-go moved from
+		// v0.17.8 to v0.26.0 along with the k8s.io/* v0.36 bump. Each matches
+		// what Kubernetes 1.36 itself does, and each was previously different,
+		// so they are worth catching if a future bump moves them again.
+		{
+			// %e lost the spaces around the multiplication sign when
+			// ParseFormatString moved into cel-go's ext package.
+			name: "scientific notation formatting",
+			exp:  `"%e".format([1.0])`,
+			want: "1.000000×10⁰⁰",
+		},
+		{
+			// first/last/unwrap arrived with the optional library's version 2.
+			// cel.OptionalTypes() is requested unversioned here and in
+			// apiserver's base environment, so they are enabled in both.
+			name: "optional library first",
+			exp:  `object.items.first().value() == 1`,
+			want: true,
+		},
+		{
+			name: "optional library last",
+			exp:  `object.items.last().value() == 3`,
+			want: true,
+		},
+		{
+			name: "optional library unwrap",
+			exp:  `optional.unwrap([optional.of(1), optional.none()]) == [1]`,
+			want: true,
+		},
+		{
+			// cel-go 0.26 always registers the string.format AST validator;
+			// 0.17.8 gated it behind an opt-in, so this used to evaluate to
+			// "1 2" instead of failing to compile.
+			name:    "string.format rejects surplus arguments",
+			exp:     `"%d %d".format([1, 2, 3])`,
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
