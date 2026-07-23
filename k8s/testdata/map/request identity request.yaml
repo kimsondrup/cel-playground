@@ -1,0 +1,11 @@
+kind:
+  group: "apps"
+  version: "v1"
+  kind: "Deployment"
+resource:
+subResource: ""
+name: "name-from-request-tab"
+namespace: "namespace-from-request-tab"
+operation: "UPDATE"
+userInfo:
+  username: "alice"

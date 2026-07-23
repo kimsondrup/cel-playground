@@ -1,0 +1,21 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "mutate-a-custom-resource"
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{
+          spec: Object.spec{
+            parts: [
+              Object.spec.parts{
+                name: "injected",
+                size: 1
+              }
+            ]
+          }
+        }

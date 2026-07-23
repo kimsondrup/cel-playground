@@ -46,6 +46,15 @@ type CelMatchConditionsInfo struct {
 	expression string
 }
 
+// CelMutationInfo describes a single entry of a MutatingAdmissionPolicy's
+// spec.mutations. patchType is either "ApplyConfiguration" or "JSONPatch" and
+// expression is the corresponding applyConfiguration.expression /
+// jsonPatch.expression.
+type CelMutationInfo struct {
+	patchType  string
+	expression string
+}
+
 type CelInformation struct {
 	name                   string
 	namespace              string
@@ -54,6 +63,9 @@ type CelInformation struct {
 	auditAnnotations       []CelAuditAnnotationsInfo
 	matchConditions        []CelMatchConditionsInfo
 	webhookMatchConditions [][]CelMatchConditionsInfo
+	mutations              []CelMutationInfo
+	failurePolicy          string
+	reinvocationPolicy     string
 }
 
 func deserializeCelInformation(data []byte) (runtime.Object, error) {
@@ -78,6 +90,10 @@ func extractCelInformation(input []byte) (*CelInformation, error) {
 			return extractVAPV1Beta1CelInformation(resource), nil
 		case *v1.ValidatingAdmissionPolicy:
 			return extractVAPV1CelInformation(resource), nil
+		// MutatingAdmissionPolicy is deliberately absent here: the map mode
+		// deserializes it through deserializeMutatingAdmissionPolicy instead, and
+		// accepting it here would make the vap and webhooks modes silently return
+		// a partial result for a policy they cannot evaluate.
 		case *v1beta1.ValidatingWebhookConfiguration:
 			return extractVWV1Beta1CelInformation(resource), nil
 		case *v1.ValidatingWebhookConfiguration:
@@ -132,7 +148,12 @@ func extractVAPV1Alpha1CelInformation(policy *v1alpha1.ValidatingAdmissionPolicy
 	}
 
 	return &CelInformation{
-		name, namespace, variables, validations, auditAnnotations, matchConditions, nil,
+		name:             name,
+		namespace:        namespace,
+		variables:        variables,
+		validations:      validations,
+		auditAnnotations: auditAnnotations,
+		matchConditions:  matchConditions,
 	}
 }
 
@@ -175,7 +196,12 @@ func extractVAPV1Beta1CelInformation(policy *v1beta1.ValidatingAdmissionPolicy) 
 	}
 
 	return &CelInformation{
-		name, namespace, variables, validations, auditAnnotations, matchConditions, nil,
+		name:             name,
+		namespace:        namespace,
+		variables:        variables,
+		validations:      validations,
+		auditAnnotations: auditAnnotations,
+		matchConditions:  matchConditions,
 	}
 }
 
@@ -218,7 +244,12 @@ func extractVAPV1CelInformation(policy *v1.ValidatingAdmissionPolicy) *CelInform
 	}
 
 	return &CelInformation{
-		name, namespace, variables, validations, auditAnnotations, matchConditions, nil,
+		name:             name,
+		namespace:        namespace,
+		variables:        variables,
+		validations:      validations,
+		auditAnnotations: auditAnnotations,
+		matchConditions:  matchConditions,
 	}
 }
 
@@ -235,7 +266,7 @@ func extractVWV1Beta1CelInformation(webhookConfig *v1beta1.ValidatingWebhookConf
 		webhookMatchConditions = append(webhookMatchConditions, matchConditions)
 	}
 	return &CelInformation{
-		"", "", nil, nil, nil, nil, webhookMatchConditions,
+		webhookMatchConditions: webhookMatchConditions,
 	}
 }
 
@@ -252,7 +283,7 @@ func extractVWV1CelInformation(webhookConfig *v1.ValidatingWebhookConfiguration)
 		webhookMatchConditions = append(webhookMatchConditions, matchConditions)
 	}
 	return &CelInformation{
-		"", "", nil, nil, nil, nil, webhookMatchConditions,
+		webhookMatchConditions: webhookMatchConditions,
 	}
 }
 
@@ -269,7 +300,7 @@ func extractMWV1Beta1CelInformation(webhookConfig *v1beta1.MutatingWebhookConfig
 		webhookMatchConditions = append(webhookMatchConditions, matchConditions)
 	}
 	return &CelInformation{
-		"", "", nil, nil, nil, nil, webhookMatchConditions,
+		webhookMatchConditions: webhookMatchConditions,
 	}
 }
 
@@ -286,6 +317,135 @@ func extractMWV1CelInformation(webhookConfig *v1.MutatingWebhookConfiguration) *
 		webhookMatchConditions = append(webhookMatchConditions, matchConditions)
 	}
 	return &CelInformation{
-		"", "", nil, nil, nil, nil, webhookMatchConditions,
+		webhookMatchConditions: webhookMatchConditions,
+	}
+}
+
+// convertMAPV1Alpha1 and convertMAPV1Beta1 normalize the earlier served
+// versions of MutatingAdmissionPolicy onto the v1 shape. The three schemas are
+// structurally identical in k8s.io/api v0.36, so the conversion is a
+// field-for-field copy of the parts the playground evaluates; everything
+// downstream then only has to understand v1.
+func convertMAPV1Alpha1(policy *v1alpha1.MutatingAdmissionPolicy) *v1.MutatingAdmissionPolicy {
+	converted := &v1.MutatingAdmissionPolicy{ObjectMeta: policy.ObjectMeta}
+	converted.Spec.ReinvocationPolicy = v1.ReinvocationPolicyType(policy.Spec.ReinvocationPolicy)
+	if policy.Spec.FailurePolicy != nil {
+		failurePolicy := v1.FailurePolicyType(*policy.Spec.FailurePolicy)
+		converted.Spec.FailurePolicy = &failurePolicy
+	}
+	if policy.Spec.ParamKind != nil {
+		converted.Spec.ParamKind = &v1.ParamKind{
+			APIVersion: policy.Spec.ParamKind.APIVersion,
+			Kind:       policy.Spec.ParamKind.Kind,
+		}
+	}
+	for _, variable := range policy.Spec.Variables {
+		converted.Spec.Variables = append(converted.Spec.Variables, v1.Variable{
+			Name:       variable.Name,
+			Expression: variable.Expression,
+		})
+	}
+	for _, matchCondition := range policy.Spec.MatchConditions {
+		converted.Spec.MatchConditions = append(converted.Spec.MatchConditions, v1.MatchCondition{
+			Name:       matchCondition.Name,
+			Expression: matchCondition.Expression,
+		})
+	}
+	for _, mutation := range policy.Spec.Mutations {
+		next := v1.Mutation{PatchType: v1.PatchType(mutation.PatchType)}
+		if mutation.ApplyConfiguration != nil {
+			next.ApplyConfiguration = &v1.ApplyConfiguration{Expression: mutation.ApplyConfiguration.Expression}
+		}
+		if mutation.JSONPatch != nil {
+			next.JSONPatch = &v1.JSONPatch{Expression: mutation.JSONPatch.Expression}
+		}
+		converted.Spec.Mutations = append(converted.Spec.Mutations, next)
+	}
+	return converted
+}
+
+func convertMAPV1Beta1(policy *v1beta1.MutatingAdmissionPolicy) *v1.MutatingAdmissionPolicy {
+	converted := &v1.MutatingAdmissionPolicy{ObjectMeta: policy.ObjectMeta}
+	converted.Spec.ReinvocationPolicy = v1.ReinvocationPolicyType(policy.Spec.ReinvocationPolicy)
+	if policy.Spec.FailurePolicy != nil {
+		failurePolicy := v1.FailurePolicyType(*policy.Spec.FailurePolicy)
+		converted.Spec.FailurePolicy = &failurePolicy
+	}
+	if policy.Spec.ParamKind != nil {
+		converted.Spec.ParamKind = &v1.ParamKind{
+			APIVersion: policy.Spec.ParamKind.APIVersion,
+			Kind:       policy.Spec.ParamKind.Kind,
+		}
+	}
+	for _, variable := range policy.Spec.Variables {
+		converted.Spec.Variables = append(converted.Spec.Variables, v1.Variable{
+			Name:       variable.Name,
+			Expression: variable.Expression,
+		})
+	}
+	for _, matchCondition := range policy.Spec.MatchConditions {
+		converted.Spec.MatchConditions = append(converted.Spec.MatchConditions, v1.MatchCondition{
+			Name:       matchCondition.Name,
+			Expression: matchCondition.Expression,
+		})
+	}
+	for _, mutation := range policy.Spec.Mutations {
+		next := v1.Mutation{PatchType: v1.PatchType(mutation.PatchType)}
+		if mutation.ApplyConfiguration != nil {
+			next.ApplyConfiguration = &v1.ApplyConfiguration{Expression: mutation.ApplyConfiguration.Expression}
+		}
+		if mutation.JSONPatch != nil {
+			next.JSONPatch = &v1.JSONPatch{Expression: mutation.JSONPatch.Expression}
+		}
+		converted.Spec.Mutations = append(converted.Spec.Mutations, next)
+	}
+	return converted
+}
+
+func extractMAPV1CelInformation(policy *v1.MutatingAdmissionPolicy) *CelInformation {
+	variables := []CelVariableInfo{}
+	for _, variable := range policy.Spec.Variables {
+		variables = append(variables, CelVariableInfo{
+			name:       variable.Name,
+			expression: variable.Expression,
+		})
+	}
+
+	matchConditions := []CelMatchConditionsInfo{}
+	for _, matchCondition := range policy.Spec.MatchConditions {
+		matchConditions = append(matchConditions, CelMatchConditionsInfo{
+			name:       matchCondition.Name,
+			expression: matchCondition.Expression,
+		})
+	}
+
+	mutations := []CelMutationInfo{}
+	for _, mutation := range policy.Spec.Mutations {
+		var expression string
+		switch {
+		case mutation.ApplyConfiguration != nil:
+			expression = mutation.ApplyConfiguration.Expression
+		case mutation.JSONPatch != nil:
+			expression = mutation.JSONPatch.Expression
+		}
+		mutations = append(mutations, CelMutationInfo{
+			patchType:  string(mutation.PatchType),
+			expression: expression,
+		})
+	}
+
+	var failurePolicy string
+	if policy.Spec.FailurePolicy != nil {
+		failurePolicy = string(*policy.Spec.FailurePolicy)
+	}
+
+	return &CelInformation{
+		name:               policy.ObjectMeta.GetName(),
+		namespace:          policy.ObjectMeta.GetNamespace(),
+		variables:          variables,
+		matchConditions:    matchConditions,
+		mutations:          mutations,
+		failurePolicy:      failurePolicy,
+		reinvocationPolicy: string(policy.Spec.ReinvocationPolicy),
 	}
 }

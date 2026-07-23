@@ -1,0 +1,25 @@
+apiVersion: admissionregistration.k8s.io/v1alpha1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "copy-app-label"
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+    - apiGroups:   ["apps"]
+      apiVersions: ["v1"]
+      operations:  ["CREATE", "UPDATE"]
+      resources:   ["deployments"]
+  variables:
+  - name: appName
+    expression: "'app' in object.metadata.labels ? object.metadata.labels['app'] : 'unknown'"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{
+          metadata: Object.metadata{
+            labels: {"owning-app": variables.appName}
+          }
+        }

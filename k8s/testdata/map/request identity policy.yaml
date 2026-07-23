@@ -1,0 +1,20 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "report-request-identity"
+spec:
+  failurePolicy: Ignore
+  reinvocationPolicy: IfNeeded
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{
+          metadata: Object.metadata{
+            annotations: {
+              "playground/req-name": request.name,
+              "playground/req-namespace": request.namespace,
+              "playground/req-resource": request.resource.resource
+            }
+          }
+        }
