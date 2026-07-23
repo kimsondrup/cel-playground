@@ -19,6 +19,7 @@ import {
   COPY_FEEDBACK_MS,
   copyToClipboard,
 } from "../../utils/clipboard.js";
+import { getWarningsOpen, setWarningsOpen } from "../../utils/localStorage.js";
 
 const outputResultEl = document.getElementById("editor__output-result");
 const holderEl = document.querySelector(".editor__output-holder");
@@ -34,11 +35,51 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
+// isPlainResult is true for top-level result fields that arrive as bare strings
+// -- diff, finalObject, notSimulated, failurePolicy, reinvocationPolicy, and
+// each warnings entry -- rather than as result objects.
+function isPlainResult(result) {
+  return typeof result !== "object" || result === null;
+}
+
+// renderDiff colorizes a unified diff. The result panel background is always
+// dark, so the colors are picked for a dark background.
+function renderDiff(diff) {
+  const lines = escapeHtml(diff.trimEnd())
+    .split("\n")
+    .map((line, i) => {
+      // Only the first two lines are the --- / +++ file headers. A removed line
+      // whose own text starts with -- would otherwise be read as one.
+      if (i < 2 && (line.startsWith("---") || line.startsWith("+++")))
+        return `<span class="diff-file">${line}</span>`;
+      if (line.startsWith("@@"))
+        return `<span class="diff-hunk">${line}</span>`;
+      if (line.startsWith("+")) return `<span class="diff-add">${line}</span>`;
+      if (line.startsWith("-")) return `<span class="diff-del">${line}</span>`;
+      return line;
+    });
+  return `<pre>${lines.join("\n")}</pre>`;
+}
+
+// errorTooltips says what failed, per section kind. The fallback is the wording
+// the vap and webhooks modes have always used for a failed validation.
+const errorTooltips = {
+  mutations: "This mutation did not run.",
+  mutationVariables: "This variable could not be evaluated.",
+  matchConditions: "This match condition could not be evaluated.",
+};
+
 // sectionLabel names a result section, for the row and for the copy button's
-// accessible name. item.name is a validation or variable name straight out of
-// the policy.
-function sectionLabel(item, name, i) {
-  return item.name ? `${name}.${item.name}` : `${name}[${i}]`;
+// accessible name.
+function sectionLabel(item, name, i, total) {
+  // A bare string is its own label: "finalObject[0]" would be misleading.
+  // warnings is the one list of them, so those keep their index.
+  if (isPlainResult(item)) return total > 1 ? `${name}[${i}]` : name;
+  // item.name is a validation or variable name straight out of the policy.
+  if (item.name) return `${name}.${item.name}`;
+  // Mutations have no name; the patch type is what distinguishes them.
+  if (item.patchType) return `${name}[${i}] (${item.patchType})`;
+  return `${name}[${i}]`;
 }
 
 // aria-label wins the accessible-name computation over title, so both have to
@@ -87,36 +128,51 @@ function createCopyButton(text, label) {
   return button;
 }
 
-function createAccordionItemsByResults(name, result, index) {
+function createAccordionItemsByResults(name, result, index, total = 1) {
+  const isWarning = name === "warnings";
+
   const listItem = document.createElement("li");
   listItem.className = "editor__output-result-accordion";
-  listItem.setAttribute("data-open", "false");
+  // Warnings and the diff start expanded: a warning describes something that
+  // already affected the result, and the diff is the answer to what the policy
+  // did. A collapsed warning stays collapsed -- see getWarningsOpen.
+  const startsOpen = isWarning ? getWarningsOpen() : name === "diff";
+  listItem.setAttribute("data-open", startsOpen ? "true" : "false");
   listItem.onclick = (e) => {
+    // Only the header row toggles. The body is there to be read from, and
+    // ending a selection inside it must not collapse the section -- which for a
+    // warning would also switch off the remembered preference.
+    if (!e.target.closest(".result-accordion-content")) return;
     const isAccordionOpen = listItem.getAttribute("data-open") === "true";
-    if (isAccordionOpen) listItem.setAttribute("data-open", "false");
-    else listItem.setAttribute("data-open", "true");
+    listItem.setAttribute("data-open", isAccordionOpen ? "false" : "true");
+    if (isWarning) setWarningsOpen(!isAccordionOpen);
   };
 
   const accordionContent = document.createElement("div");
   accordionContent.className = "result-accordion-content";
-  accordionContent.appendChild(createLabel(result, name, index));
+  accordionContent.appendChild(createLabel(result, name, index, total));
   // The cost and the copy button share a right-hand group, so the label still
   // sits opposite them under the row's space-between.
   const actions = document.createElement("div");
   actions.className = "result-accordion-actions";
-  const costSpan = document.createElement("span");
-  costSpan.innerHTML = `Cost: ${result?.cost ?? "-"}`;
-  actions.appendChild(costSpan);
-  const { text, html } = renderResult(result);
+  // Bare strings have no cost of their own.
+  if (!isPlainResult(result)) {
+    const costSpan = document.createElement("span");
+    costSpan.innerHTML = `Cost: ${result?.cost ?? "-"}`;
+    actions.appendChild(costSpan);
+  }
+  const { text, html } = renderResult(result, name);
   if (text !== "") {
-    const label = sectionLabel(result, name, index);
+    const label = sectionLabel(result, name, index, total);
     actions.appendChild(createCopyButton(text, label));
   }
   accordionContent.appendChild(actions);
 
   const expansibleContent = document.createElement("div");
   expansibleContent.className = "result-accordion-expansible-content";
-  expansibleContent.innerHTML = `<span>${html}</span>`;
+  // No wrapper element: most bodies are a <pre> or a <p>, and nesting a block
+  // inside an inline <span> made the browser split it into anonymous blocks.
+  expansibleContent.innerHTML = html;
 
   listItem.appendChild(accordionContent);
   listItem.appendChild(expansibleContent);
@@ -129,13 +185,30 @@ function createAccordionItemsByResults(name, result, index) {
 //
 // text is "" wherever the markup is a placeholder describing the value rather
 // than being it, and no copy button is offered for those.
-function renderResult(result) {
+function renderResult(result, name) {
+  if (isPlainResult(result)) {
+    const text = String(result);
+    if (name === "diff") return { text, html: renderDiff(result) };
+    // Warnings and the not-simulated list are prose, not documents: <pre> would
+    // send a full sentence off the right edge behind a horizontal scrollbar.
+    if (name === "warnings" || name === "notSimulated") {
+      const style = name === "warnings" ? "result-warning" : "result-note";
+      return { text, html: `<p class="${style}">${escapeHtml(text)}</p>` };
+    }
+    // YAML ends with a newline, which <pre> would render as a blank last line.
+    return { text, html: `<pre>${escapeHtml(text.trimEnd())}</pre>` };
+  }
+
   if (result.isError) {
     const text = result.error == null ? "" : String(result.error);
     return {
       text,
       html: `<span class="result-error">${escapeHtml(text)}</span>`,
     };
+  }
+  if ("mutatedObject" in result) {
+    const text = String(result.mutatedObject);
+    return { text, html: `<pre>${escapeHtml(text.trimEnd())}</pre>` };
   }
   if ("message" in result) return renderText(result.message);
   if ("value" in result) {
@@ -165,7 +238,7 @@ function renderText(value) {
   return { text, html: escapeHtml(text) };
 }
 
-function createLabel(item, name, i) {
+function createLabel(item, name, i, total = 1) {
   const parentContainer = document.createElement("div");
   parentContainer.className = "result-accordion-label";
 
@@ -173,16 +246,34 @@ function createLabel(item, name, i) {
   arrowIcon.className = "ph ph-caret-right ph-bold result-arrow";
 
   const span = document.createElement("span");
-  span.innerHTML = escapeHtml(sectionLabel(item, name, i));
+  span.innerHTML = escapeHtml(sectionLabel(item, name, i, total));
 
   parentContainer.appendChild(arrowIcon);
+
+  if (name === "warnings") {
+    const warningIcon = document.createElement("i");
+    warningIcon.className =
+      "ph ph-warning ph-fill result-accordion-warning-icon";
+    warningIcon.setAttribute("aria-hidden", "true");
+    parentContainer.appendChild(
+      createTooltip({
+        contentText: "The result may not match a real cluster.",
+        triggerElement: warningIcon,
+        position: { left: 50, top: -10 },
+      })
+    );
+  }
 
   if (item?.isError) {
     const errorIcon = document.createElement("i");
     errorIcon.className = "ph ph-x-circle ph-fill result-accordion-error-icon";
+    errorIcon.setAttribute("aria-hidden", "true");
 
     const errorIconWithTooltip = createTooltip({
-      contentText: "Validation compilation failed.",
+      // Every mutation failure funnels through one sink in the Go code --
+      // compilation, evaluation, patching, and an empty Object tab -- so
+      // "compilation failed" would be wrong for most of them.
+      contentText: errorTooltips[name] ?? "Validation compilation failed.",
       triggerElement: errorIcon,
       position: {
         left: 50,
@@ -197,10 +288,12 @@ function createLabel(item, name, i) {
   return parentContainer;
 }
 
-function renderAccordions(key, values, index = 0) {
+function renderAccordions(key, values, index = 0, total = 1) {
   if (Array.isArray(values))
-    values.forEach((value, index) => renderAccordions(key, value, index));
-  else createAccordionItemsByResults(key, values, index);
+    values.forEach((value, i) =>
+      renderAccordions(key, value, i, values.length)
+    );
+  else createAccordionItemsByResults(key, values, index, total);
 }
 
 export function hideAccordions() {

@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
-import { localStorageModeKey, localStorageThemeKey } from "../constants.js";
+import {
+  localStorageModeKey,
+  localStorageThemeKey,
+  localStorageWarningsOpenKey,
+} from "../constants.js";
 
 export function getCurrentTheme() {
   return localStorage.getItem(localStorageThemeKey) ?? "light";
@@ -22,4 +26,14 @@ export function getCurrentTheme() {
 
 export function getCurrentMode() {
   return localStorage.getItem(localStorageModeKey) ?? "cel";
+}
+
+// Absent or unrecognised means open: a warning describes something that already
+// affected the result, so expanded is the default until someone collapses one.
+export function getWarningsOpen() {
+  return localStorage.getItem(localStorageWarningsOpenKey) !== "false";
+}
+
+export function setWarningsOpen(isOpen) {
+  localStorage.setItem(localStorageWarningsOpenKey, String(isOpen));
 }
