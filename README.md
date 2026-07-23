@@ -6,6 +6,22 @@
 CEL Playground is an interactive WebAssembly (Wasm) powered environment to explore and experiment with the [Common Expression Language (CEL)](https://github.com/google/cel-spec).
 It provides a simple and user-friendly interface to write and quickly evaluate CEL expressions.
 
+## Modes
+
+The playground evaluates several kinds of CEL input, selectable from the mode picker:
+
+- **CEL Expression** — a bare expression against an arbitrary input document.
+- **Validating Admission Policy** — a
+  [ValidatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/):
+  `matchConditions`, `variables`, `validations` and `auditAnnotations`.
+- **Mutating Admission Policy** — a
+  [MutatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/)
+  (`admissionregistration.k8s.io/v1`): `matchConditions`, `variables`, and the
+  object produced by each `spec.mutations` entry, for both the
+  `ApplyConfiguration` and `JSONPatch` patch types.
+- **Web Hooks** — `matchConditions` on validating and mutating webhook
+  configurations.
+
 ## CEL libraries
 
 CEL Playground is built by compiling Go code to WebAssembly and includes the following libraries that are available in the environment:
