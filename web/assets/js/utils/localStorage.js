@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
-import { localStorageModeKey, localStorageThemeKey } from "../constants.js";
+import {
+  localStorageModeKey,
+  localStorageThemeKey,
+  localStorageWarningsOpenKey,
+} from "../constants.js";
 
 export function getCurrentTheme() {
   return localStorage.getItem(localStorageThemeKey) ?? "light";
@@ -22,4 +26,16 @@ export function getCurrentTheme() {
 
 export function getCurrentMode() {
   return localStorage.getItem(localStorageModeKey) ?? "cel";
+}
+
+// Warnings open expanded, since they describe something that already affected
+// the result. Once someone has collapsed one they have read it, and a warning
+// that reappears expanded on every run is just something to close again -- so
+// the last state they chose is what the next run starts in.
+export function getWarningsOpen() {
+  return localStorage.getItem(localStorageWarningsOpenKey) !== "false";
+}
+
+export function setWarningsOpen(isOpen) {
+  localStorage.setItem(localStorageWarningsOpenKey, String(isOpen));
 }

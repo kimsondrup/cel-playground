@@ -1,0 +1,77 @@
+{
+  "examples": [
+    {
+      "name": "Add a Default Label",
+      "category": "Apply Configuration",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"add-managed-by-label\"\nspec:\n  # failurePolicy: how the apiserver reacts if this policy fails to\n  # evaluate (Fail = deny the request, Ignore = skip the mutation).\n  # reinvocationPolicy: whether the mutation list may run more than once\n  # if other policies also mutate the object (Never = run it once).\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"apps\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"deployments\"]\n  mutations:\n  # ApplyConfiguration merges this fragment into the object with\n  # server-side-apply semantics: the returned labels are added to the\n  # existing ones, so the object's own \"app\" label is kept, not replaced.\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{\n          metadata: Object.metadata{\n            labels: {\"app.kubernetes.io/managed-by\": \"mutating-admission-policy\"}\n          }\n        }\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: default\n  labels:\n    app: nginx\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      containers:\n      - name: nginx\n        image: nginx:1.27\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": ""
+    },
+    {
+      "name": "Inject a Sidecar Container",
+      "category": "Apply Configuration",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"inject-sidecar\"\nspec:\n  failurePolicy: Fail\n  # IfNeeded: if a later policy mutates the object, run this mutation\n  # again so the injected sidecar is not lost. This is the recommended\n  # setting for injection policies.\n  reinvocationPolicy: IfNeeded\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"apps\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"deployments\"]\n  mutations:\n  # A \"native sidecar\" is an initContainer with restartPolicy: Always\n  # (Kubernetes 1.28+). initContainers has listType=map keyed by name, so\n  # server-side-apply merges by name: the existing \"setup\" initContainer\n  # is preserved and \"mesh-proxy\" is added alongside it.\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{\n          spec: Object.spec{\n            template: Object.spec.template{\n              spec: Object.spec.template.spec{\n                initContainers: [\n                  Object.spec.template.spec.initContainers{\n                    name: \"mesh-proxy\",\n                    image: \"registry.example.com/mesh/proxy:v1.0.0\",\n                    restartPolicy: \"Always\"\n                  }\n                ]\n              }\n            }\n          }\n        }\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: default\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      initContainers:\n      - name: setup\n        image: busybox:1.36\n      containers:\n      - name: nginx\n        image: nginx:1.27\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": ""
+    },
+    {
+      "name": "Chained Mutations",
+      "category": "Apply Configuration",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"propagate-part-of-label\"\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"apps\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"deployments\"]\n  mutations:\n  # Mutation 1: stamp a recommended \"part-of\" label on the Deployment.\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{\n          metadata: Object.metadata{\n            labels: {\"app.kubernetes.io/part-of\": \"billing-system\"}\n          }\n        }\n  # Mutation 2: copy that label down onto the pod template. The `object`\n  # binding here already reflects mutation 1 -- mutations run in order,\n  # each one seeing the result of the previous.\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{\n          spec: Object.spec{\n            template: Object.spec.template{\n              metadata: Object.spec.template.metadata{\n                labels: {\n                  \"app.kubernetes.io/part-of\": object.metadata.labels[\"app.kubernetes.io/part-of\"]\n                }\n              }\n            }\n          }\n        }\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: default\n  labels:\n    app: nginx\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      containers:\n      - name: nginx\n        image: nginx:1.27\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": ""
+    },
+    {
+      "name": "JSON Patch",
+      "category": "JSON Patch",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"jsonpatch-remove-and-escape\"\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"apps\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"deployments\"]\n  mutations:\n  # JSONPatch is for what ApplyConfiguration cannot express. Here:\n  #   - \"remove\" deletes a field outright (an apply-configuration can only\n  #     add or overwrite, never unset).\n  #   - the second op adds a label whose key contains \"/\". In a JSON\n  #     Pointer path \"/\" is the separator, so it must be escaped as \"~1\";\n  #     jsonpatch.escapeKey() does that (\"example.com/owner\" -> \"example.com~1owner\").\n  - patchType: JSONPatch\n    jsonPatch:\n      expression: >\n        [\n          JSONPatch{op: \"remove\", path: \"/metadata/annotations/deprecated\"},\n          JSONPatch{\n            op: \"add\",\n            path: \"/metadata/labels/\" + jsonpatch.escapeKey(\"example.com/owner\"),\n            value: \"sre\"\n          }\n        ]\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: default\n  labels:\n    app: nginx\n  annotations:\n    deprecated: \"true\"\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      containers:\n      - name: nginx\n        image: nginx:1.27\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": ""
+    },
+    {
+      "name": "Variables in Mutation",
+      "category": "Variables",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"backfill-recommended-name\"\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"apps\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"deployments\"]\n  variables:\n  # Compute a value once and reuse it below as variables.appName.\n  # Delete the object's \"app\" label to see the 'unknown' fallback branch.\n  - name: appName\n    expression: \"'app' in object.metadata.labels ? object.metadata.labels['app'] : 'unknown'\"\n  mutations:\n  # Backfill the recommended label app.kubernetes.io/name from the legacy\n  # \"app\" label -- the mutation copies variables.appName, so the output\n  # value is visibly the one the variable computed.\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{\n          metadata: Object.metadata{\n            labels: {\"app.kubernetes.io/name\": variables.appName}\n          }\n        }\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: billing\n  namespace: default\n  labels:\n    app: billing\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: billing\n  template:\n    metadata:\n      labels:\n        app: billing\n    spec:\n      containers:\n      - name: billing\n        image: nginx:1.27\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": ""
+    },
+    {
+      "name": "Conditional Mutation",
+      "category": "Conditions",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"default-tier-if-absent\"\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"apps\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"deployments\"]\n  # matchConditions gate whether the mutation runs at all -- use them for\n  # checks a label/namespace selector cannot express. This one is a\n  # set-if-absent guard: only default the \"tier\" label when it is missing.\n  # Add `tier: <anything>` to the object's labels and re-run: the\n  # condition becomes false and the object comes back unchanged.\n  matchConditions:\n  - name: tier-not-set\n    expression: \"!has(object.metadata.labels) || !('tier' in object.metadata.labels)\"\n  mutations:\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{\n          metadata: Object.metadata{\n            labels: {\"tier\": \"standard\"}\n          }\n        }\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: default\n  labels:\n    app: nginx\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      containers:\n      - name: nginx\n        image: nginx:1.27\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": ""
+    },
+    {
+      "name": "Admission Context",
+      "category": "Context",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"record-admission-context\"\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  # UPDATE only: the mutation reads oldObject, which is null on CREATE.\n  # Matching CREATE too would error here under failurePolicy: Fail.\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"apps\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"UPDATE\"]\n      resources:   [\"deployments\"]\n  mutations:\n  # Every value comes from a different context binding available to a\n  # policy -- one annotation per input tab, so the result reads as a\n  # legend for what each binding holds.\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{\n          metadata: Object.metadata{\n            annotations: {\n              \"playground.example.com/operation\": string(request.operation),\n              \"playground.example.com/changed-by\": request.userInfo.username,\n              \"playground.example.com/environment\": namespaceObject.metadata.labels[\"environment\"],\n              \"playground.example.com/scaled-from\": string(oldObject.spec.replicas),\n              \"playground.example.com/may-scale\": string(\n                authorizer.group(\"apps\").resource(\"deployments\").check(\"update\").allowed()\n              )\n            }\n          }\n        }\n",
+      "dataOldObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: default\n  labels:\n    app: nginx\nspec:\n  replicas: 1\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      containers:\n      - name: nginx\n        image: nginx:1.27\n",
+      "dataObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: default\n  labels:\n    app: nginx\nspec:\n  replicas: 5\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      containers:\n      - name: nginx\n        image: nginx:1.27\n",
+      "dataNamespace": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: default\n  labels:\n    kubernetes.io/metadata.name: default\n    environment: production\n",
+      "dataRequest": "kind:\n  group: \"apps\"\n  version: \"v1\"\n  kind: \"Deployment\"\nresource:\n  group: \"apps\"\n  version: \"v1\"\n  resource: \"deployments\"\nname: \"nginx\"\nnamespace: \"default\"\noperation: \"UPDATE\"\nuserInfo:\n  username: \"alice\"\n  groups:\n  - \"system:authenticated\"\n",
+      "dataAuthorizer": "groups:\n  apps:\n    resources:\n      deployments:\n        checks:\n          # Nesting is checks[namespace][name][verb]. An empty-string key\n          # means \"not scoped to a namespace / name\" -- this decision\n          # applies to the update verb on deployments regardless of which.\n          \"\":\n            \"\":\n              update:\n                decision: allow\n"
+    }
+  ],
+  "versions": {
+    "cel-go": "v0.26.0"
+  }
+}

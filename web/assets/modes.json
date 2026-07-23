@@ -44,6 +44,38 @@
     ]
   },
   {
+    "id": "map",
+    "name": "Mutating Admission Policy",
+    "mode": "yaml",
+    "tabs": [
+      {
+        "id": "dataObject",
+        "name": "Object",
+        "mode": "yaml"
+      },
+      {
+        "id": "dataOldObject",
+        "name": "Old Object",
+        "mode": "yaml"
+      },
+      {
+        "id": "dataNamespace",
+        "name": "Namespace",
+        "mode": "yaml"
+      },
+      {
+        "id": "dataRequest",
+        "name": "Request",
+        "mode": "yaml"
+      },
+      {
+        "id": "dataAuthorizer",
+        "name": "Authorizer",
+        "mode": "yaml"
+      }
+    ]
+  },
+  {
     "id": "webhooks",
     "name": "Web Hooks",
     "mode": "yaml",
