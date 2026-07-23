@@ -18,9 +18,18 @@ import { AceEditor } from "../editor.js";
 import { setEditorTheme } from "../theme.js";
 import { getCurrentMode } from "./localStorage.js";
 
+// The expression editor's DOM id is rewritten to the mode id on every mode
+// switch (see renderExpressionContent). Looking it up by its stable class
+// instead of by the current mode means a mode/DOM disagreement can no longer
+// crash with ace's "can't find div #<mode>".
+function exprEditorId() {
+  const exprInput = document.querySelector(".editor__input.expr__input");
+  if (!exprInput) throw new Error("the expression editor is not rendered yet");
+  return exprInput.id;
+}
+
 export function getExprEditorValue() {
-  const modeId = getCurrentMode();
-  const exprEditor = new AceEditor(modeId);
+  const exprEditor = new AceEditor(exprEditorId());
   const exprEditorValue = exprEditor.getValue();
   setEditorTheme(exprEditor);
   return exprEditorValue;
@@ -40,8 +49,9 @@ export function getInputEditorValue() {
 
 export function getRunValues() {
   const modeId = getCurrentMode();
-  const exprEditor = new AceEditor(modeId);
+  const exprEditor = new AceEditor(exprEditorId());
   setEditorTheme(exprEditor);
+  // Keyed by the mode id, which is what the wasm side reads with getArg.
   let values = {
     [modeId]: exprEditor.getValue(),
   };

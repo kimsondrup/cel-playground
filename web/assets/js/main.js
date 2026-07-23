@@ -36,11 +36,14 @@ if (!WebAssembly.instantiateStreaming) {
 const output = document.getElementById("output");
 
 function run() {
-  const values = getRunValues();
   output.value = "Evaluating...";
   setCost("");
 
   try {
+    // Inside the try: this reads the editors by DOM id and throws if the mode
+    // and the rendered editors ever disagree. It used to sit outside, so the
+    // failure surfaced only as an uncaught console error with no UI feedback.
+    const values = getRunValues();
     const modeId = getCurrentMode();
     const result = eval(modeId, values);
     const { output: resultOutput, isError } = result;
@@ -62,9 +65,15 @@ function run() {
       setCost(resultCost);
     }
   } catch (error) {
-    output.value = "";
     setCost("");
-    console.log(error);
+    hideAccordions();
+    // Show it. Blanking the panel and logging to the console left no trace of
+    // why nothing happened.
+    output.value = `Something went wrong evaluating this input: ${
+      error?.message ?? error
+    }`;
+    output.style.color = "red";
+    console.error(error);
   }
 }
 

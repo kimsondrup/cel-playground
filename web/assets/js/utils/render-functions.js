@@ -68,7 +68,15 @@ export function renderExamplesInSelectInstance(mode, examples) {
   examplesList.appendChild(blankOption);
   selectInstance.update();
 
-  examplesList.addEventListener("change", (event) => {
+  // Assignment, not addEventListener: this function runs again on every mode
+  // switch, and addEventListener would stack a handler per switch, each closed
+  // over a stale mode and example list. Picking an example then fires all of
+  // them. Today the stale ones mostly no-op on the `!example` guard, since no
+  // two modes ship an example of the same name -- but the moment two do, the
+  // leftover handler looks the name up in ITS examples and writes that mode's
+  // content into the editors, or calls ace.edit() for an editor id that no
+  // longer exists and throws.
+  examplesList.onchange = (event) => {
     const example = examples.find(
       (example) => example.name === event.target.value
     );
@@ -96,7 +104,7 @@ export function renderExamplesInSelectInstance(mode, examples) {
     setCost("");
     output.value = "";
     hideAccordions();
-  });
+  };
 }
 
 export function setCost(cost) {

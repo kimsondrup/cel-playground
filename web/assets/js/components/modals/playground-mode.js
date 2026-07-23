@@ -119,15 +119,37 @@ modal.init();
 async function handleModeClick(event, mode, element) {
   const { value } = event.target;
 
+  // Clicking the already-active mode would re-render its editor from scratch
+  // and wipe whatever the user has typed. There is nothing to switch to, so
+  // leave the editors and output alone and just close the dialog.
+  if (value === getCurrentMode()) {
+    setTimeout(() => modal.hide(), 350);
+    return;
+  }
+
+  // Render first and only commit the mode once it succeeded. Committing it
+  // unconditionally left the stored mode pointing at an editor that had never
+  // been created, and every later Run threw "ace.edit can't find div #<mode>".
+  try {
+    await renderUIChangesByMode(mode);
+  } catch (error) {
+    console.error(`failed to switch to the ${mode.id} mode`, error);
+    output.value = `Failed to load the ${mode.name} mode: ${
+      error?.message ?? error
+    }`;
+    output.style.color = "red";
+    return;
+  }
+
   document
     .querySelectorAll(".playground-modes__options--option")
     .forEach((option) => option.classList.remove("active"));
-
   element.classList.add("active");
-  await renderUIChangesByMode(mode);
+
   localStorage.setItem(localStorageModeKey, value);
   hideAccordions();
   output.value = "";
+  output.style.color = "white";
   deleteContentUrlParam();
   setTimeout(() => modal.hide(), 350);
 }
@@ -147,25 +169,38 @@ function renderModeOptions() {
 
         const modeId = getCurrentMode();
 
-        if (urlParams.has("content")) {
-          const obj = getDecompressedContent(urlParams.get("content"));
+        // Each of these is guarded so that one mode failing to render cannot
+        // abort the loop and leave the remaining modes with no option element
+        // -- which would make them unselectable.
+        try {
+          if (urlParams.has("content")) {
+            const obj = getDecompressedContent(urlParams.get("content"));
 
-          if (("data" in obj || "expression" in obj) && mode.id === "cel") {
+            if (("data" in obj || "expression" in obj) && mode.id === "cel") {
+              divOption.classList.add("active");
+              await renderUIChangesByMode(mode);
+              renderSharedContent(mode, obj, true);
+              applyThemeToEditors(mode);
+            } else if (mode.id === obj.mode) {
+              divOption.classList.add("active");
+              await renderUIChangesByMode(mode);
+              renderSharedContent(mode, obj);
+            }
+          } else if (!modeId && index === 0) {
+            divOption.classList.add("active");
+            await renderUIChangesByMode(modes.find((mode) => mode.id === "cel"));
+          } else if (modeId === mode.id) {
             divOption.classList.add("active");
             await renderUIChangesByMode(mode);
-            renderSharedContent(mode, obj, true);
-            applyThemeToEditors(mode);
-          } else if (mode.id === obj.mode) {
-            divOption.classList.add("active");
-            await renderUIChangesByMode(mode);
-            renderSharedContent(mode, obj);
           }
-        } else if (!modeId && index === 0) {
-          divOption.classList.add("active");
-          await renderUIChangesByMode(modes.find((mode) => mode.id === "cel"));
-        } else if (modeId === mode.id) {
-          divOption.classList.add("active");
-          await renderUIChangesByMode(mode);
+        } catch (error) {
+          console.error(`failed to render the ${mode.id} mode`, error);
+          divOption.classList.remove("active");
+          // The stored mode could not be rendered, so nothing would match its
+          // editor id later. Fall back to a mode that is always present.
+          if (modeId === mode.id) {
+            localStorage.setItem(localStorageModeKey, "cel");
+          }
         }
 
         divOption.appendChild(label);
@@ -184,9 +219,18 @@ function createParentElement(mode) {
   return divOption;
 }
 
+// The expression editor's div is given the mode id as its DOM id (see
+// renderExpressionContent), so the mode radio cannot also use the bare mode id:
+// two elements would share it, and `label[for]` and document.getElementById
+// both resolve to whichever comes first in the document -- the editor. That
+// made clicking the currently selected mode's label do nothing at all.
+function modeOptionId(mode) {
+  return `mode-option-${mode.id}`;
+}
+
 function createLabelElement(mode) {
   const label = document.createElement("label");
-  label.htmlFor = mode.id;
+  label.htmlFor = modeOptionId(mode);
   label.innerHTML = mode.name;
   return label;
 }
@@ -195,8 +239,8 @@ function createInputElement(mode) {
   const input = document.createElement("input");
   input.className = "playground-modes__options--option-input";
   input.type = "radio";
-  input.name = mode.id;
-  input.id = mode.id;
+  input.name = "playground-mode";
+  input.id = modeOptionId(mode);
   input.value = mode.id;
   return input;
 }
@@ -212,16 +256,14 @@ export async function renderUIChangesByMode(mode) {
   inputTitleEl.innerHTML = mode.tabs.length > 1 ? "Inputs: " : "Input";
   costText.innerHTML = mode.tabs.length > 1 ? "Total cost: " : "Cost: ";
 
-  try {
-    const examples = await ExampleService.getExampleContentById(mode.id);
-    renderExpressionContent(mode, examples);
-    setCost("");
-    renderTabs(mode, examples);
-    renderExamplesInSelectInstance(mode, examples);
-    applyThemeToEditors(mode);
-  } catch (error) {
-    console.log(error);
-  }
+  // Deliberately not caught here: a half-rendered mode must not be reported as
+  // a successful switch. Callers decide what to do about it.
+  const examples = await ExampleService.getExampleContentById(mode.id);
+  renderExpressionContent(mode, examples);
+  setCost("");
+  renderTabs(mode, examples);
+  renderExamplesInSelectInstance(mode, examples);
+  applyThemeToEditors(mode);
 }
 
 function deleteContentUrlParam() {
