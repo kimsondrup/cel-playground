@@ -1,0 +1,22 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "unknown-field"
+spec:
+  failurePolicy: Fail
+  # matchConditons, not matchConditions: the lenient decoder drops it, so the
+  # gate disappears and the mutation runs unguarded.
+  matchConditons:
+  - name: never
+    expression: "false"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{
+          metadata: Object.metadata{
+            labels: {
+              "ran": "yes"
+            }
+          }
+        }

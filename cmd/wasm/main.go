@@ -52,6 +52,16 @@ var modeExecFns = map[string]execFunction{
 			getArg(argMap, "dataAuthorizer"),
 		)
 	},
+	"map": func(mode string, argMap js.Value) (string, error) {
+		return k8s.EvalMutatingAdmissionPolicy(
+			getArg(argMap, "map"),
+			getArg(argMap, "dataOldObject"),
+			getArg(argMap, "dataObject"),
+			getArg(argMap, "dataNamespace"),
+			getArg(argMap, "dataRequest"),
+			getArg(argMap, "dataAuthorizer"),
+		)
+	},
 	"webhooks": func(mode string, argMap js.Value) (string, error) {
 		return k8s.EvalWebhook(
 			getArg(argMap, "webhooks"),

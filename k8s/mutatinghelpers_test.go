@@ -1,0 +1,440 @@
+// Copyright 2023 Undistro Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package k8s
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"runtime"
+	"strings"
+	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
+)
+
+func TestGuessResource(t *testing.T) {
+	tests := []struct {
+		kind string
+		want string
+	}{
+		{"Deployment", "deployments"},
+		{"Pod", "pods"},
+		{"NetworkPolicy", "networkpolicies"},
+		{"Ingress", "ingresses"},
+		{"Endpoints", "endpoints"},
+		{"Gateway", "gateways"},
+		{"StorageClass", "storageclasses"},
+		{"PriorityClass", "priorityclasses"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			if got := guessResource(tt.kind); got != tt.want {
+				t.Errorf("guessResource(%q) = %q, want %q", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUnifiedDiff(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+		want string
+	}{{
+		name: "identical documents produce no diff",
+		from: "a\nb\n",
+		to:   "a\nb\n",
+		want: "",
+	}, {
+		// A zero-length side starts at line 0 in the unified diff format.
+		name: "addition to an empty document",
+		from: "",
+		to:   "a\n",
+		want: "--- object\n+++ mutated\n@@ -0,0 +1,1 @@\n+a\n",
+	}, {
+		name: "removal down to an empty document",
+		from: "a\n",
+		to:   "",
+		want: "--- object\n+++ mutated\n@@ -1,1 +0,0 @@\n-a\n",
+	}, {
+		name: "single line replaced",
+		from: "a\n",
+		to:   "b\n",
+		want: "--- object\n+++ mutated\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+	}, {
+		name: "insertion keeps surrounding context",
+		from: "a\nb\nc\n",
+		to:   "a\nb\nx\nc\n",
+		want: "--- object\n+++ mutated\n@@ -1,3 +1,4 @@\n a\n b\n+x\n c\n",
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := unifiedDiff(tt.from, tt.to, "object", "mutated"); got != tt.want {
+				t.Errorf("unifiedDiff() =\n%q\nwant\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUnifiedDiffHunkCountsMatchBody guards the @@ headers against drifting out
+// of sync with the lines that follow them.
+func TestUnifiedDiffHunkCountsMatchBody(t *testing.T) {
+	from := "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\n"
+	to := "l1\nCHANGED\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nCHANGED15\n"
+
+	got := unifiedDiff(from, to, "object", "mutated")
+	if got == "" {
+		t.Fatal("expected a diff")
+	}
+
+	lines := splitLines(got)
+	if len(lines) < 2 || lines[0] != "--- object" || lines[1] != "+++ mutated" {
+		t.Fatalf("missing file headers:\n%s", got)
+	}
+
+	var fromCount, toCount, declaredFrom, declaredTo int
+	hunks := 0
+	check := func() {
+		if hunks == 0 {
+			return
+		}
+		if fromCount != declaredFrom || toCount != declaredTo {
+			t.Errorf("hunk %d body has %d/%d lines, header declared %d/%d",
+				hunks, fromCount, toCount, declaredFrom, declaredTo)
+		}
+	}
+
+	for _, line := range lines[2:] {
+		if strings.HasPrefix(line, "@@ ") {
+			check()
+			hunks++
+			fromCount, toCount = 0, 0
+			var fromStart, toStart int
+			if _, err := fmt.Sscanf(line, "@@ -%d,%d +%d,%d @@", &fromStart, &declaredFrom, &toStart, &declaredTo); err != nil {
+				t.Fatalf("unparseable hunk header %q: %v", line, err)
+			}
+			continue
+		}
+		switch line[0] {
+		case '+':
+			toCount++
+		case '-':
+			fromCount++
+		default:
+			fromCount++
+			toCount++
+		}
+	}
+	check()
+
+	if hunks != 2 {
+		t.Errorf("got %d hunks, want 2 (the two edits are far enough apart to split):\n%s", hunks, got)
+	}
+}
+
+func TestMutationAuthorizer(t *testing.T) {
+	config := &Authorizer{
+		Paths: map[string]*PathCheck{
+			"/healthz": {Checks: map[string]*Decision{
+				"get": {Decision: "allow", Reason: "path-allowed"},
+			}},
+		},
+		Groups: map[string]*GroupCheck{
+			"apps": {Resources: map[string]*ResourceCheck{
+				"deployments": {
+					Checks: map[string]map[string]map[string]*Decision{
+						"": {"": {
+							"update": {Decision: "allow", Reason: "root-allow"},
+							"delete": {Decision: "deny", Reason: "root-deny"},
+							"patch":  {Error: "authorization webhook unreachable", Reason: "root-error"},
+						}},
+						"prod": {"web": {
+							"update": {Decision: "allow", Reason: "namespaced-allow"},
+						}},
+					},
+					Subresources: map[string]*ResourceCheck{
+						"status": {Checks: map[string]map[string]map[string]*Decision{
+							"": {"": {"update": {Decision: "deny", Reason: "subresource-deny"}}},
+						}},
+					},
+				},
+			}},
+		},
+		ServiceAccounts: map[string]map[string]*Authorizer{
+			"default": {"builder": {Groups: map[string]*GroupCheck{
+				"apps": {Resources: map[string]*ResourceCheck{
+					"deployments": {Checks: map[string]map[string]map[string]*Decision{
+						"": {"": {"update": {Decision: "allow", Reason: "service-account-allow"}}},
+					}},
+				}},
+			}}},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		attributes  authorizer.AttributesRecord
+		wantAllowed authorizer.Decision
+		wantReason  string
+		wantErr     bool
+	}{{
+		name:        "resource check allows",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update"},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "root-allow",
+	}, {
+		name:        "resource check denies",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "delete"},
+		wantAllowed: authorizer.DecisionDeny,
+		wantReason:  "root-deny",
+	}, {
+		name:        "an errored decision keeps its reason",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "patch"},
+		wantAllowed: authorizer.DecisionNoOpinion,
+		wantReason:  "root-error",
+		wantErr:     true,
+	}, {
+		name:        "an unknown verb has no opinion",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "create"},
+		wantAllowed: authorizer.DecisionNoOpinion,
+	}, {
+		name:        "namespace and name select a different entry",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Namespace: "prod", Name: "web", Verb: "update"},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "namespaced-allow",
+	}, {
+		name:        "subresources are resolved",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Subresource: "status", Verb: "update"},
+		wantAllowed: authorizer.DecisionDeny,
+		wantReason:  "subresource-deny",
+	}, {
+		name:        "path checks are resolved",
+		attributes:  authorizer.AttributesRecord{Path: "/healthz", Verb: "get"},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "path-allowed",
+	}, {
+		name: "a service account user resolves the serviceAccounts section",
+		attributes: authorizer.AttributesRecord{
+			ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+			User: &user.DefaultInfo{Name: "system:serviceaccount:default:builder"},
+		},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "service-account-allow",
+	}, {
+		name: "an unknown service account gets an empty authorizer, not the root one",
+		attributes: authorizer.AttributesRecord{
+			ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+			User: &user.DefaultInfo{Name: "system:serviceaccount:default:unknown"},
+		},
+		wantAllowed: authorizer.DecisionNoOpinion,
+	}, {
+		name: "a non-service-account user uses the root authorizer",
+		attributes: authorizer.AttributesRecord{
+			ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+			User: &user.DefaultInfo{Name: "alice"},
+		},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "root-allow",
+	}, {
+		name:        "keys are matched after trimming whitespace",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: " apps ", Resource: " deployments ", Verb: " update "},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "root-allow",
+	}}
+
+	adapter := &mutationAuthorizer{config: config}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision, reason, err := adapter.Authorize(context.Background(), tt.attributes)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Authorize() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if decision != tt.wantAllowed {
+				t.Errorf("decision = %v, want %v", decision, tt.wantAllowed)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestMutationAuthorizerWithoutConfig(t *testing.T) {
+	adapter := &mutationAuthorizer{}
+	decision, reason, err := adapter.Authorize(context.Background(), authorizer.AttributesRecord{
+		ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+	})
+	if err != nil || decision != authorizer.DecisionNoOpinion || reason != "" {
+		t.Errorf("Authorize() = (%v, %q, %v), want (NoOpinion, \"\", nil)", decision, reason, err)
+	}
+}
+
+// TestUnifiedDiffLargeDocument pins the prefix/suffix trimming in diffOps. A
+// one-line change in a large object must stay cheap: without trimming, the LCS
+// table alone is len(from)*len(to) ints, which is ~200 MB of browser memory at
+// 5000 lines for the ten-line diff asserted here. The allocation ceiling is
+// deliberately generous -- it is there to catch the table coming back, not to
+// pin an exact figure.
+func TestUnifiedDiffLargeDocument(t *testing.T) {
+	const lines = 5000
+	document := make([]string, lines)
+	for i := range document {
+		document[i] = fmt.Sprintf("  - name: container-%d", i)
+	}
+	from := strings.Join(document, "\n") + "\n"
+	inserted := append([]string{}, document[:lines/2]...)
+	inserted = append(inserted, "  - name: INSERTED")
+	inserted = append(inserted, document[lines/2:]...)
+	to := strings.Join(inserted, "\n") + "\n"
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got := unifiedDiff(from, to, "object", "mutated")
+	runtime.ReadMemStats(&after)
+
+	allocated := after.TotalAlloc - before.TotalAlloc
+	const maxAlloc = 16 << 20
+	if allocated > maxAlloc {
+		t.Errorf("unifiedDiff allocated %d bytes, want at most %d -- has the LCS table stopped being trimmed?", allocated, maxAlloc)
+	}
+
+	// One insertion, three lines of context either side, plus the two file
+	// headers and the hunk header.
+	if want := 10; strings.Count(got, "\n") != want {
+		t.Errorf("diff has %d lines, want %d:\n%s", strings.Count(got, "\n"), want, got)
+	}
+	if !strings.Contains(got, "+  - name: INSERTED") {
+		t.Errorf("diff does not contain the inserted line:\n%s", got)
+	}
+	if strings.Contains(got, "-  - name: container-") {
+		t.Errorf("diff reports deletions for an insertion-only change:\n%s", got)
+	}
+	// The hunk must be located at the insertion point, not at line 1.
+	if want := fmt.Sprintf("@@ -%d,", lines/2-2); !strings.Contains(got, want) {
+		t.Errorf("diff hunk header is not at the insertion point, want %q:\n%s", want, got)
+	}
+}
+
+// TestBlankNamespaceTabIsConsistent pins the two decoders that read the
+// Namespace tab against each other. deserializeNamespace feeds the
+// matchCondition environment and decodeNamespaceObject feeds the mutation
+// patchers; cmd/wasm/main.go sends []byte("") for a blank tab, never nil, so if
+// only one of them treats empty as absent the same expression answers
+// differently in a matchCondition and in a mutation of the same policy.
+func TestBlankNamespaceTabIsConsistent(t *testing.T) {
+	for _, input := range [][]byte{nil, []byte(""), []byte("   \n")} {
+		namespaceMap, err := deserializeNamespace(input)
+		if err != nil {
+			t.Fatalf("deserializeNamespace(%q) error = %v", input, err)
+		}
+		namespaceObject, err := decodeNamespaceObject(input)
+		if err != nil {
+			t.Fatalf("decodeNamespaceObject(%q) error = %v", input, err)
+		}
+		if (namespaceMap == nil) != (namespaceObject == nil) {
+			t.Errorf("input %q: deserializeNamespace nil=%v but decodeNamespaceObject nil=%v -- "+
+				"the matchCondition and mutation environments disagree about the same tab",
+				input, namespaceMap == nil, namespaceObject == nil)
+		}
+	}
+}
+
+// TestSchemaCoverageBeyondEmbeddedSpecs pins the coverage the generated
+// client-go schema buys over the OpenAPI test fixtures that preceded it. A
+// group-version without a schema merges lists atomically, which silently
+// contradicts what a cluster would do -- so a built-in type falling out of
+// coverage is a real regression, not a cosmetic one.
+func TestSchemaCoverageBeyondEmbeddedSpecs(t *testing.T) {
+	backed := []schema.GroupVersionKind{
+		{Version: "v1", Kind: "Pod"},
+		{Version: "v1", Kind: "Service"},
+		{Group: "apps", Version: "v1", Kind: "Deployment"},
+		{Group: "batch", Version: "v1", Kind: "Job"},
+		// None of the following had an embedded spec before the switch to the
+		// generated schema.
+		{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "Role"},
+		{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"},
+		{Group: "policy", Version: "v1", Kind: "PodDisruptionBudget"},
+		{Group: "autoscaling", Version: "v2", Kind: "HorizontalPodAutoscaler"},
+	}
+	for _, gvk := range backed {
+		if _, ok := typeConverterFor(gvk); !ok {
+			t.Errorf("%s has no schema, so its lists would merge atomically", gvk)
+		}
+	}
+
+	// A custom resource has no schema anywhere and must still take the deduced
+	// path, which is what the missing-schema warning tells the user about.
+	crd := schema.GroupVersionKind{Group: "example.com", Version: "v1", Kind: "Widget"}
+	if _, ok := typeConverterFor(crd); ok {
+		t.Errorf("%s reports a schema, but nothing can know a custom resource's shape", crd)
+	}
+}
+
+// TestUndeclaredFieldsAreAllReported covers the preserve-and-warn path.
+// structured-merge-diff stops walking a map at its first undeclared field, so
+// without the pruning loop in undeclaredFields only one of these would surface.
+func TestUndeclaredFieldsAreAllReported(t *testing.T) {
+	gvk := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "demo", "notAField": "x"},
+		"spec": map[string]any{
+			"replicas": int64(1),
+			"alpha":    "1",
+			"beta":     "2",
+		},
+	}}
+	got, more := undeclaredFields(gvk, object)
+	want := []string{".metadata.notAField", ".spec.alpha", ".spec.beta"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("undeclaredFields() = %v, want %v", got, want)
+	}
+	if more {
+		t.Error("undeclaredFields() reported the list as incomplete, want complete")
+	}
+
+	// A field name containing a dot cannot be pruned, so the walk stops there
+	// and has to say the list may be incomplete rather than implying it is not.
+	dotted := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "demo"},
+		"spec":       map[string]any{"replicas": int64(1), "my.field": "x", "zzz": "y"},
+	}}
+	if _, more := undeclaredFields(gvk, dotted); !more {
+		t.Error("undeclaredFields() reported a complete list after giving up on a dotted field name")
+	}
+
+	// A fully declared object must not warn.
+	clean := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "demo"},
+		"spec":       map[string]any{"replicas": int64(1)},
+	}}
+	if got, more := undeclaredFields(gvk, clean); got != nil || more {
+		t.Errorf("undeclaredFields() on a clean object = %v, %v, want nil, false", got, more)
+	}
+}

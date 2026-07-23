@@ -1,0 +1,158 @@
+// Copyright 2023 Undistro Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package k8s
+
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"k8s.io/apiserver/pkg/authentication/serviceaccount"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
+)
+
+// mutationAuthorizer adapts the playground's hand-rolled Authorizer fixture
+// (k8s/authorizer.go) to the authorizer.Authorizer interface that
+// k8s.io/apiserver's CEL authz library expects.
+//
+// The mutation path reuses upstream's compiler, which binds `authorizer` and
+// `authorizer.requestResource` through library.Authz() rather than through the
+// playground's traits.Receiver types. Both paths read the same Authorizer
+// editor tab, and this adapter exists to give the same answers from the same
+// fixture.
+//
+// The two are not interchangeable yet: the receiver types assign onto the
+// *ResourceCheck stored in the fixture map, so state leaks between chains within
+// one evaluation and an un-narrowed check() can read the request's own namespace
+// and name. That is a pre-existing defect in the receiver path, not one this
+// adapter introduces, and it applies inside this mode too -- matchConditions and
+// spec.variables go through the receiver types, only spec.mutations come here.
+//
+// Lookup mirrors the receiver types: resource checks are indexed as
+// checks[namespace][name][verb] with subresources nested under the resource, and
+// path checks as checks[verb]. Keys are trimmed the way k8s/authorizer.go's
+// getString trims them. An entry that is absent yields DecisionNoOpinion, which
+// is what `allowed()` reports as false.
+type mutationAuthorizer struct {
+	config *Authorizer
+
+	// requestUser is the username from the Request tab. library.Authz()'s
+	// serviceAccount(namespace, name) swaps the user info it passes down and
+	// leaves no other trace, so a username differing from this one is the only
+	// signal that the expression asked about a service account rather than about
+	// whoever is making the request.
+	requestUser string
+}
+
+var _ authorizer.Authorizer = &mutationAuthorizer{}
+
+func (m *mutationAuthorizer) Authorize(_ context.Context, attr authorizer.Attributes) (authorizer.Decision, string, error) {
+	config := m.configFor(attr)
+	if config == nil {
+		return authorizer.DecisionNoOpinion, "", nil
+	}
+	decision := lookupDecision(config, attr)
+	if decision == nil {
+		return authorizer.DecisionNoOpinion, "", nil
+	}
+	if decision.Error != "" {
+		// The receiver types report errored() and reason() independently, so
+		// the reason is preserved alongside the error here too.
+		return authorizer.DecisionNoOpinion, decision.Reason, errors.New(decision.Error)
+	}
+	switch decision.Decision {
+	case "allow":
+		return authorizer.DecisionAllow, decision.Reason, nil
+	case "deny":
+		return authorizer.DecisionDeny, decision.Reason, nil
+	}
+	return authorizer.DecisionNoOpinion, decision.Reason, nil
+}
+
+// configFor resolves `authorizer.serviceAccount(namespace, name)`. That function
+// only swaps the request's user info, so the service account is recognized by
+// its username here, exactly as a real authorizer would.
+//
+// A username equal to the Request tab's own is not such a call, and has to keep
+// the fixture root: the root section describes what the requesting user can do,
+// whoever they are, and reading a service account section for it would make the
+// root unreachable for every request made as a service account -- which is an
+// ordinary thing to put in the Request tab, and would silently deny everything.
+//
+// One corner remains, and prefers the root deliberately: where the Request tab's
+// user is a service account and the expression asks about that same account,
+// this cannot tell the two apart and answers from the root. The receiver types
+// would use the serviceAccounts section. A cluster cannot tell them apart
+// either -- one user, one set of permissions -- so a fixture that gives the two
+// sections different answers is describing something a cluster would not do, and
+// the root is the section that governs the request actually being made.
+func (m *mutationAuthorizer) configFor(attr authorizer.Attributes) *Authorizer {
+	if m.config == nil {
+		return nil
+	}
+	user := attr.GetUser()
+	if user == nil || user.GetName() == m.requestUser {
+		return m.config
+	}
+	namespace, name, err := serviceaccount.SplitUsername(user.GetName())
+	if err != nil {
+		return m.config
+	}
+	namespacedServiceAccounts, ok := m.config.ServiceAccounts[strings.TrimSpace(namespace)]
+	if !ok {
+		// An unknown service account gets an empty authorizer rather than the
+		// requesting user's, mirroring Authorizer.Receive.
+		return &Authorizer{}
+	}
+	serviceAccount, ok := namespacedServiceAccounts[strings.TrimSpace(name)]
+	if !ok || serviceAccount == nil {
+		return &Authorizer{}
+	}
+	return serviceAccount
+}
+
+func lookupDecision(config *Authorizer, attr authorizer.Attributes) *Decision {
+	if !attr.IsResourceRequest() {
+		pathCheck, ok := config.Paths[strings.TrimSpace(attr.GetPath())]
+		if !ok || pathCheck == nil {
+			return nil
+		}
+		return pathCheck.Checks[strings.TrimSpace(attr.GetVerb())]
+	}
+
+	groupCheck, ok := config.Groups[strings.TrimSpace(attr.GetAPIGroup())]
+	if !ok || groupCheck == nil {
+		return nil
+	}
+	resourceCheck, ok := groupCheck.Resources[strings.TrimSpace(attr.GetResource())]
+	if !ok || resourceCheck == nil {
+		return nil
+	}
+	if subresource := strings.TrimSpace(attr.GetSubresource()); subresource != "" {
+		resourceCheck, ok = resourceCheck.Subresources[subresource]
+		if !ok || resourceCheck == nil {
+			return nil
+		}
+	}
+	namespacedChecks, ok := resourceCheck.Checks[strings.TrimSpace(attr.GetNamespace())]
+	if !ok {
+		return nil
+	}
+	namedChecks, ok := namespacedChecks[strings.TrimSpace(attr.GetName())]
+	if !ok {
+		return nil
+	}
+	return namedChecks[strings.TrimSpace(attr.GetVerb())]
+}

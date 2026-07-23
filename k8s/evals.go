@@ -113,14 +113,42 @@ type EvalResult struct {
 	Message any     `json:"message,omitempty"`
 }
 
+// EvalMutationResult is the outcome of a single MutatingAdmissionPolicy
+// spec.mutations entry. MutatedObject is the YAML serialization of the object
+// as it looks *after* this mutation has been applied, so a chain of mutations
+// can be inspected step by step.
+type EvalMutationResult struct {
+	PatchType     string  `json:"patchType,omitempty"`
+	MutatedObject string  `json:"mutatedObject,omitempty"`
+	Cost          *uint64 `json:"cost,omitempty"`
+	Error         *string `json:"error,omitempty"`
+	IsError       bool    `json:"isError,omitempty"`
+}
+
 type EvalResponse struct {
-	MatchConditionsVariables []*EvalVariable `json:"matchConditionVariables,omitempty"`
-	MatchConditions          []*EvalResult   `json:"matchConditions,omitempty"`
-	ValidationVariables      []*EvalVariable `json:"validationVariables,omitempty"`
-	Validations              []*EvalResult   `json:"validations,omitempty"`
-	AuditAnnotations         []*EvalResult   `json:"auditAnnotations,omitempty"`
-	WebhookMatchConditions   [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
-	Cost                     *uint64         `json:"cost,omitempty"`
+	// Warnings is first so it renders at the top of the output panel: the JSON
+	// key order drives the order the accordions are built in.
+	Warnings                 []string              `json:"warnings,omitempty"`
+	MatchConditionsVariables []*EvalVariable       `json:"matchConditionVariables,omitempty"`
+	MatchConditions          []*EvalResult         `json:"matchConditions,omitempty"`
+	ValidationVariables      []*EvalVariable       `json:"validationVariables,omitempty"`
+	Validations              []*EvalResult         `json:"validations,omitempty"`
+	AuditAnnotations         []*EvalResult         `json:"auditAnnotations,omitempty"`
+	MutationVariables        []*EvalVariable       `json:"mutationVariables,omitempty"`
+	Mutations                []*EvalMutationResult `json:"mutations,omitempty"`
+	// Diff comes before FinalObject: it is the short answer to "what did this
+	// policy change", and the final object is the long one.
+	Diff        string `json:"diff,omitempty"`
+	FinalObject string `json:"finalObject,omitempty"`
+	// NotSimulated lists the parts of this policy the playground parsed and did
+	// not act on. It is a standing property of the mode rather than of the run,
+	// which is why it is not a warning: a warning that fires every time stops
+	// being read, and the warnings above are all "this result may be wrong".
+	NotSimulated           string          `json:"notSimulated,omitempty"`
+	FailurePolicy          string          `json:"failurePolicy,omitempty"`
+	ReinvocationPolicy     string          `json:"reinvocationPolicy,omitempty"`
+	WebhookMatchConditions [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
+	Cost                   *uint64         `json:"cost,omitempty"`
 }
 
 func getResults(val ref.Val) (any, *string) {
