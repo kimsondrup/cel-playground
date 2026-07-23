@@ -409,3 +409,64 @@ func TestValidationEval(t *testing.T) {
 		})
 	}
 }
+
+// TestValidationCELLibraries exercises the CEL libraries added to k8s/cel.go so
+// they stay wired up. Each case is a validation expression that uses one
+// library and must evaluate to true. It asserts availability, not cost, so it
+// checks the result and the absence of an error and does not pin a cost.
+func TestValidationCELLibraries(t *testing.T) {
+	object := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"x"}}`
+	cases := []struct {
+		lib  string
+		expr string
+	}{
+		{"semver", `semver('1.2.3').minor() == 2`},
+		{"ip", `isIP('10.0.0.1') && ip('10.0.0.1').family() == 4`},
+		{"cidr", `isCIDR('10.0.0.0/8') && cidr('10.0.0.0/8').containsIP(ip('10.0.0.1'))`},
+		{"format", `format.named('dns1123Label').hasValue()`},
+		{"sets", `sets.contains([1, 2, 3], [2, 3])`},
+		{"twoVarComprehensions", `[10, 20, 30].all(i, v, v >= 10)`},
+		{"extLists", `[3, 1, 2].sort() == [1, 2, 3]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.lib, func(t *testing.T) {
+			policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: lib-check
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["deployments"]
+  validations:
+    - expression: "` + tc.expr + `"
+`
+			out, err := k8s.EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte(object), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Eval() error = %v", err)
+			}
+			var resp k8s.EvalResponse
+			if err := json.Unmarshal([]byte(out), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(resp.Validations) != 1 {
+				t.Fatalf("got %d validations, want 1: %s", len(resp.Validations), out)
+			}
+			v := resp.Validations[0]
+			if v.IsError {
+				msg := "<nil>"
+				if v.Error != nil {
+					msg = *v.Error
+				}
+				t.Fatalf("%s expression errored (library not registered?): %s", tc.lib, msg)
+			}
+			if v.Result != true {
+				t.Errorf("%s expression = %v, want true", tc.lib, v.Result)
+			}
+		})
+	}
+}
