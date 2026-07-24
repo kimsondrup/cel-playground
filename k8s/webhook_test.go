@@ -162,3 +162,44 @@ func TestWebhookEval(t *testing.T) {
 		})
 	}
 }
+
+// TestWebhookObjectDecodeIsClusterFaithful proves the webhook mode decodes its
+// object input the way a real cluster does, end to end. A bare `enabled: yes`
+// value in the object is YAML-1.1-coerced to boolean true (kubectl's
+// YAMLToJSON), so a matchCondition of `object.spec.enabled == true` matches.
+// Under the previous gopkg.in/yaml.v3 decode `yes` stayed the string "yes" and
+// the same expression would not have matched. Kept assertion-focused on the
+// coerced Result rather than pinning a cost, since the point is the behavior
+// change, not the (unshifted) cost arithmetic.
+func TestWebhookObjectDecodeIsClusterFaithful(t *testing.T) {
+	webhook := []byte(`apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+webhooks:
+  - name: my-webhook.example.com
+    matchConditions:
+      - name: 'enabled-is-true'
+        expression: 'object.spec.enabled == true'
+`)
+	object := []byte(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo
+spec:
+  enabled: yes
+`)
+
+	results, err := k8s.EvalWebhook(webhook, nil, object, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalWebhook() error = %v", err)
+	}
+	evalResponse := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(results), &evalResponse); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(evalResponse.WebhookMatchConditions) != 1 || len(evalResponse.WebhookMatchConditions[0]) != 1 {
+		t.Fatalf("unexpected match condition shape: %#v", evalResponse.WebhookMatchConditions)
+	}
+	if got := evalResponse.WebhookMatchConditions[0][0].Result; got != true {
+		t.Errorf("matchCondition Result = %v, want true (bare `yes` should coerce to bool)", got)
+	}
+}
