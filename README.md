@@ -14,8 +14,17 @@ CEL Playground is built by compiling Go code to WebAssembly and includes the fol
 - [Kubernetes list library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-list-library)
 - [Kubernetes regex library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-regex-library)
 - [Kubernetes URL library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-url-library)
+- [Kubernetes semver library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-semver-library)
 
-Take a look at [all the environment options](eval/eval.go#L26).
+The Kubernetes policy modes (Validating Admission Policy and Web Hooks)
+additionally include the [IP](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-ip-library),
+[CIDR](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-cidr-library)
+and [format](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-format-library)
+libraries, two-variable comprehensions, and the CEL list extension (`.sort()`),
+matching the CEL environment a Kubernetes apiserver exposes.
+
+Take a look at the environment options in [eval/eval.go](eval/eval.go) (the CEL
+mode) and [k8s/cel.go](k8s/cel.go) (the Kubernetes modes).
 
 ## Development
 

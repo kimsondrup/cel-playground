@@ -347,3 +347,60 @@ examples:
 
     category: "Audit"
 
+  - name: "CEL Libraries"
+    vap: |
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingAdmissionPolicy
+      metadata:
+        name: "cel-libraries"
+      spec:
+        failurePolicy: Fail
+        matchConstraints:
+          resourceRules:
+          - apiGroups:   ["apps"]
+            apiVersions: ["v1"]
+            operations:  ["CREATE", "UPDATE"]
+            resources:   ["deployments"]
+        variables:
+          - name: image
+            expression: "object.spec.template.spec.containers[0].image"
+          - name: tag
+            expression: "variables.image.split(':')[1]"
+        validations:
+          # semver (1.33+): require a released image tag, not a pre-release.
+          - expression: "isSemver(variables.tag, true) && semver(variables.tag, true).isGreaterThan(semver('v1.0.0', true))"
+            message: "the image tag must be a semver greater than v1.0.0"
+          # format (1.31+): the name must be a valid DNS label. validate()
+          # returns the errors as an optional, empty when the value is valid.
+          - expression: "!format.dns1123Label().validate(object.metadata.name).hasValue()"
+            message: "metadata.name must be a valid DNS1123 label"
+
+    dataOldObject: |
+
+    dataObject: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: web
+        namespace: default
+      spec:
+        replicas: 3
+        selector:
+          matchLabels:
+            app: web
+        template:
+          metadata:
+            labels:
+              app: web
+          spec:
+            containers:
+            - name: web
+              image: registry.io/web:v1.4.0
+
+    dataNamespace: |
+
+    dataRequest: |
+
+    dataAuthorizer: |
+
+    category: "Kubernetes"

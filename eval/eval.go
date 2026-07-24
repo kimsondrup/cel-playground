@@ -41,6 +41,7 @@ var celEnvOptions = []cel.EnvOption{
 	k8s.URLs(),
 	k8s.Regex(),
 	k8s.Lists(),
+	k8s.SemverLib(k8s.SemverVersion(1)),
 
 	// 1.27
 	// k8s.Authz(),
