@@ -139,10 +139,10 @@ func TestValidationEval(t *testing.T) {
 				Value: map[string]any{
 					"query": []any{"val"},
 				},
-				Cost: uint64ptr(14),
+				Cost: uint64ptr(19),
 			}},
 			Validations: []*k8s.EvalResult{{Result: true, Cost: uint64ptr(2)}},
-			Cost:        uint64ptr(16),
+			Cost:        uint64ptr(21),
 		},
 	}, {
 		name:    "test valid matchConditions, should see validations and auditAnnotations",
@@ -268,14 +268,14 @@ func TestValidationEval(t *testing.T) {
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result: true,
-				Cost:   uint64ptr(10),
+				Cost:   uint64ptr(350009),
 			}},
 			AuditAnnotations: []*k8s.EvalResult{{
 				Name:    strptr("test-annotation"),
 				Message: "Deployment is allowed in namespace default",
 				Cost:    uint64ptr(4),
 			}},
-			Cost: uint64ptr(23),
+			Cost: uint64ptr(350022),
 		},
 	}, {
 		name:       "test an expression using disallowed authorizer checks",
@@ -296,9 +296,9 @@ func TestValidationEval(t *testing.T) {
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result: false,
-				Cost:   uint64ptr(10),
+				Cost:   uint64ptr(350009),
 			}},
-			Cost: uint64ptr(19),
+			Cost: uint64ptr(350018),
 		},
 	}, {
 		name:    "test a broken expression within variables, expression should fail with no audit annotation",

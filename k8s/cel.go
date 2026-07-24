@@ -16,7 +16,9 @@ package k8s
 
 import (
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/checker"
 	"github.com/google/cel-go/ext"
+	"github.com/google/cel-go/interpreter"
 	k8s "k8s.io/apiserver/pkg/cel/library"
 )
 
@@ -46,8 +48,28 @@ var celEnvOptions = []cel.EnvOption{
 	k8s.CIDR(),                          // 1.30
 	k8s.Format(),                        // 1.31
 	k8s.SemverLib(k8s.SemverVersion(1)), // 1.33
+
+	// Cost accounting, also from apiserver's base.go, so a displayed cost is
+	// close to what a real cluster charges: the k8s CostEstimator in the program
+	// options below prices the extended-library functions (ip, cidr, url,
+	// semver, ...) and, most visibly, an authorizer check() at its real 350000
+	// instead of cel-go's defaults.
+	//
+	// Close, not exact. Expressions using variables.*, string concatenation or
+	// `in` over a typed list still undercharge slightly, because this env parses
+	// expressions (env.Parse) where the apiserver compiles and type-checks them,
+	// so those overloads fall back to cel-go's default cost. Closing that gap
+	// means switching Parse to Compile, a separate change.
+	//
+	// CostEstimatorOptions is currently a no-op -- nothing here runs the static
+	// estimator, only Parse and eval -- but it is kept so this stays a faithful
+	// mirror of base.go, and it becomes load-bearing the moment anyone switches
+	// to Compile. Do not delete it as dead code.
+	cel.CostEstimatorOptions(checker.PresenceTestHasCost(false)),
 }
 
 var celProgramOptions = []cel.ProgramOption{
 	cel.EvalOptions(cel.OptOptimize, cel.OptTrackCost),
+	cel.CostTrackerOptions(interpreter.PresenceTestHasCost(false)),
+	cel.CostTracking(&k8s.CostEstimator{}),
 }
