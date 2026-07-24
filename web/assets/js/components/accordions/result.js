@@ -19,6 +19,17 @@ import { createTooltip } from "../tooltips/index.js";
 const outputResultEl = document.getElementById("editor__output-result");
 const holderEl = document.querySelector(".editor__output-holder");
 
+// Everything the evaluator returns is built from what the user typed -- CEL
+// errors quote the source expression verbatim, and messageExpression results
+// are whatever string the policy produced. It all reaches innerHTML below, and
+// share.js encodes the editor state into a link, so it must be escaped.
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 function createAccordionItemsByResults(name, result, index) {
   const listItem = document.createElement("li");
   listItem.className = "editor__output-result-accordion";
@@ -47,16 +58,16 @@ function createAccordionItemsByResults(name, result, index) {
 }
 function getResultValue(result) {
   if (result.isError) {
-    return `<span style="color:#e01e5a">${result.error}</span>`;
+    return `<span style="color:#e01e5a">${escapeHtml(result.error)}</span>`;
   } else if ("message" in result) {
-    return String(result.message);
+    return escapeHtml(result.message);
   } else if ("value" in result) {
     if (typeof result.value === "object")
-      return `<pre>${JSON.stringify(result.value, null, 2)}</pre>`;
-    return String(result.value);
+      return `<pre>${escapeHtml(JSON.stringify(result.value, null, 2))}</pre>`;
+    return escapeHtml(result.value);
   }
 
-  return result.result;
+  return escapeHtml(result.result);
 }
 
 function createLabel(item, name, i) {
@@ -68,7 +79,10 @@ function createLabel(item, name, i) {
   arrowIcon.className = "ph ph-caret-right ph-bold result-arrow";
 
   const span = document.createElement("span");
-  span.innerHTML = `${item.name ? `${name}.${item.name}` : `${name}[${i}]`}`;
+  // item.name is a validation or variable name straight out of the policy.
+  span.innerHTML = escapeHtml(
+    item.name ? `${name}.${item.name}` : `${name}[${i}]`
+  );
 
   parentContainer.appendChild(arrowIcon);
 
