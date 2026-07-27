@@ -34,8 +34,8 @@ import (
 // cluster. An empty or whitespace-only input yields a nil map, mirroring an
 // empty editor tab in the playground UI.
 //
-// The map, vap and webhook modes share this decoder so that every mode shows
-// what a cluster would do with the same document.
+// The vap and webhook modes share this decoder so that both modes show what a
+// cluster would do with the same document.
 func decodeObjectInput(input []byte) (map[string]any, error) {
 	if len(strings.TrimSpace(string(input))) == 0 {
 		return nil, nil
