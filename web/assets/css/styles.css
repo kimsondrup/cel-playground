@@ -373,6 +373,10 @@ a {
 }
 
 .editor__output-holder .editor__output {
+  box-sizing: border-box;
+  /* Block: as an inline-block it sits on a line box, whose strut can descend
+     past the holder. */
+  display: block;
   background: #1d1f21;
   resize: none;
   height: 100%;
