@@ -70,6 +70,8 @@
 }
 
 .editor__output-result-accordion .result-accordion-expansible-content {
+  /* Shared with the scroll box on a <pre> body at the end of this file. */
+  --result-body-max-height: 450px;
   transition: max-height 400ms, visibility 50ms;
   overflow-x: auto;
   overflow-y: hidden;
@@ -83,10 +85,18 @@
 
 .editor__output-result-accordion[data-open="true"]
   .result-accordion-expansible-content {
-  max-height: 450px;
+  max-height: var(--result-body-max-height);
   visibility: visible;
 }
 
 .editor__output-result-accordion[data-open="true"] .result-arrow {
   transform: rotate(90deg);
+}
+
+/* Scrolls here rather than on .result-accordion-expansible-content, whose
+   overflow stays hidden so the open animation cannot flash a scrollbar. */
+.editor__output-result-accordion .result-accordion-expansible-content pre {
+  margin: 0;
+  max-height: var(--result-body-max-height);
+  overflow: auto;
 }
