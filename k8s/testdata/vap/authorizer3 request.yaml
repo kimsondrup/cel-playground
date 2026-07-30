@@ -1,0 +1,12 @@
+kind:
+  group: "apps"
+  version: "v1"
+  kind: "Deployment"
+resource:
+  group: "apps"
+  version: "v1"
+  resource: "deployments"
+subResource: ""
+operation: "UPDATE"
+userInfo:
+  username: "testuser"

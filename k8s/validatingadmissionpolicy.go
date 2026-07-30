@@ -114,7 +114,9 @@ func EvalValidatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput
 	}
 	initReceiver(&authorizer.receiverOnlyObjectVal, AuthorizerType)
 
-	authorizerRequestResource, err := getAuthorizerRequestResource(&authorizer, request)
+	objectNamespace, objectName := objectIdentity(objectValue)
+	authorizerRequestResource, err := getAuthorizerRequestResource(
+		&authorizer, request, objectNamespace, objectName)
 	if err != nil {
 		return "", err
 	}

@@ -15,6 +15,7 @@
 package k8s
 
 import (
+	"cmp"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -293,12 +294,24 @@ func getValOrEmpty(val any) string {
 	}
 }
 
-func getAuthorizerRequestResource(authorizer *Authorizer, request map[string]any) (*ResourceCheck, error) {
+// getAuthorizerRequestResource builds the authorizer.requestResource value the
+// CEL environment binds, from the Request tab.
+//
+// fallbackNamespace and fallbackName come from the object being admitted, and
+// are used where the Request tab leaves those blank. An admission request always
+// carries the namespace and name of the resource it is about, so a check that
+// narrows to neither is a cluster-scope check on a cluster -- not a check
+// against the empty string, which is what the fixture's "" keys mean.
+func getAuthorizerRequestResource(
+	authorizer *Authorizer,
+	request map[string]any,
+	fallbackNamespace, fallbackName string,
+) (*ResourceCheck, error) {
 	if authorizer == nil || request == nil {
 		return nil, nil
 	}
-	name := getValOrEmpty(request["name"])
-	namespace := getValOrEmpty(request["namespace"])
+	name := cmp.Or(getValOrEmpty(request["name"]), fallbackName)
+	namespace := cmp.Or(getValOrEmpty(request["namespace"]), fallbackNamespace)
 	resourceMap := request["resource"].(map[string]any)
 	group := getValOrEmpty(resourceMap["group"])
 	resource := getValOrEmpty(resourceMap["resource"])
@@ -319,4 +332,17 @@ func getAuthorizerRequestResource(authorizer *Authorizer, request map[string]any
 		receiver = val.(traits.Receiver)
 	}
 	return receiver.(*ResourceCheck), nil
+}
+
+// objectIdentity reports the namespace and name of a decoded object input, or
+// empty strings when the tab is empty or the metadata is not a map. It reads the
+// decoded map because that is the form the modes hold the object in.
+func objectIdentity(object map[string]any) (namespace, name string) {
+	metadata, ok := object["metadata"].(map[string]any)
+	if !ok {
+		return "", ""
+	}
+	namespace, _ = metadata["namespace"].(string)
+	name, _ = metadata["name"].(string)
+	return namespace, name
 }

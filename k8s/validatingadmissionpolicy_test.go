@@ -250,6 +250,22 @@ func TestValidationEval(t *testing.T) {
 			Cost:        uint64ptr(12),
 		},
 	}, {
+		// The Request tab names the resource but not the namespace or the name,
+		// so those come from the object. Before that fallback existed this
+		// resolved to the fixture's "" keys -- the cluster scope -- and reported
+		// cluster-scope here while the same expression in a Mutating Admission
+		// Policy mutation reported object-scope.
+		name:       "authorizer.requestResource falls back to the object's identity",
+		policy:     "authorizer3 policy.yaml",
+		orig:       "",
+		updated:    "authorizer3 updated.yaml",
+		request:    "authorizer3 request.yaml",
+		authorizer: "authorizer3 authorizer.yaml",
+		expected: k8s.EvalResponse{
+			Validations: []*k8s.EvalResult{{Result: "object-scope", Cost: uint64ptr(350002)}},
+			Cost:        uint64ptr(350002),
+		},
+	}, {
 		name:       "test an expression using allowed authorizer checks",
 		policy:     "authorizer1 policy.yaml",
 		orig:       "",

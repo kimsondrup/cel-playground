@@ -1,0 +1,11 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: "request-resource-identity.example.com"
+spec:
+  failurePolicy: Fail
+  validations:
+  # authorizer.requestResource narrows to the resource the request is about.
+  # The Request tab below sets the resource but leaves name and namespace out,
+  # so they come from the object -- which is what an admission request carries.
+  - expression: 'authorizer.requestResource.check("update").reason()'

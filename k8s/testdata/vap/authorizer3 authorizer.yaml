@@ -1,0 +1,19 @@
+paths:
+groups:
+  apps:
+    resources:
+      deployments:
+        checks:
+          # The cluster scope, reached only by a check that narrows to neither
+          # a namespace nor a name.
+          "":
+            "":
+              update:
+                decision: allow
+                reason: cluster-scope
+          default:
+            nginx:
+              update:
+                decision: allow
+                reason: object-scope
+serviceAccounts:
