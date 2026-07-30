@@ -423,7 +423,11 @@ func TestMutationEval(t *testing.T) {
 			},
 		}},
 		wantWarning: "Mutation 1 narrows an authorizer check with fieldSelector() or labelSelector()",
-		wantDiff:    true,
+		// This policy leaves failurePolicy unset, which means Fail -- the
+		// setting whose effect the playground cannot reproduce -- so the caveat
+		// has to be there for it as much as for a policy that spells it out.
+		wantNotSimulated: []string{"failurePolicy: Fail asks the apiserver to deny the request"},
+		wantDiff:         true,
 	}, {
 		// The same expression in a matchCondition fails loudly instead: those go
 		// through the playground's own receiver types, which implement no such

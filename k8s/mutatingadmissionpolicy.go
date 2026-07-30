@@ -340,9 +340,12 @@ func notSimulated(policy *admissionregistrationv1.MutatingAdmissionPolicy, schem
 		lines = append(lines, "reinvocationPolicy: IfNeeded asks for another pass after other "+
 			"plugins mutate. Each mutation here runs exactly once.")
 	}
-	if policy.Spec.FailurePolicy != nil && *policy.Spec.FailurePolicy != admissionregistrationv1.Ignore {
-		lines = append(lines, "failurePolicy: nothing is rejected here, so it changes nothing. "+
-			"A failed mutation is reported and the rest still run.")
+	if !ignoresFailures(policy) {
+		// Unset counts: the default is Fail, which is exactly the setting whose
+		// effect is missing here.
+		lines = append(lines, "failurePolicy: Fail asks the apiserver to deny the request when a "+
+			"mutation fails. There is no request to deny here, so a failed mutation is reported "+
+			"and the rest still run.")
 	}
 	if schemaBacked {
 		lines = append(lines, "API defaults: the object is used exactly as typed. A cluster "+

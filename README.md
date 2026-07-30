@@ -51,8 +51,12 @@ Admission Policy mode in particular:
   the built-in APIs only. Custom resources fall back to treating lists as atomic,
   which is warned about in the result panel.
 
-Each run repeats whichever of these apply to the policy in a `notSimulated`
-section, so the limits are on screen rather than only here.
+Each run puts the limits on screen rather than leaving them only here. The ones
+that are properties of the policy document -- `matchConstraints`, `paramKind`,
+`reinvocationPolicy`, `failurePolicy` and defaulting -- are repeated in a
+`notSimulated` section. The ones that depend on the input, such as a narrowed
+authorizer check or a custom resource falling back to atomic lists, are reported
+as warnings alongside the result they affected.
 
 ## CEL libraries
 
