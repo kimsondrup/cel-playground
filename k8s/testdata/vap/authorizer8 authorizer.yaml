@@ -1,0 +1,21 @@
+# Decisions that are not an allow: an explicit deny, which carries a reason, and a
+# check the cluster could not answer at all, which carries an error instead.
+paths:
+  /healthz:
+    checks:
+      get:
+        decision: deny
+        reason: the /healthz path is for the kubelet
+groups:
+  apps:
+    resources:
+      deployments:
+        checks:
+          "":
+            "":
+              update:
+                decision: deny
+                reason: denied-by-the-fixture
+              delete:
+                error: the webhook authorizer is unavailable
+serviceAccounts:

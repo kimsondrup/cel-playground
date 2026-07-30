@@ -1,0 +1,21 @@
+paths:
+groups:
+  apps:
+    resources:
+      deployments:
+        checks:
+          default:
+            "":
+              update:
+                decision: allow
+                reason: default-no-name
+            nginx:
+              update:
+                decision: allow
+                reason: nginx-in-default
+          other-namespace:
+            nginx:
+              update:
+                decision: allow
+                reason: nginx-in-the-objects-namespace
+serviceAccounts:

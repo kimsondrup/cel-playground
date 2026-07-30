@@ -1,0 +1,17 @@
+paths:
+groups:
+  apps:
+    resources:
+      deployments:
+        checks:
+          "":
+            "":
+              update:
+                decision: deny
+                reason: cluster-scope
+          default:
+            "":
+              update:
+                decision: allow
+                reason: namespace-scope
+serviceAccounts:

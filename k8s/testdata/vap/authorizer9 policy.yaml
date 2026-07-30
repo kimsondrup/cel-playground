@@ -1,0 +1,11 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: "request-resource-name.example.com"
+spec:
+  failurePolicy: Fail
+  validations:
+  # The Request tab names the object and its namespace, so authorizer.requestResource
+  # is the check on that name in that namespace -- not the entry written with no
+  # name, and not the namespace the object being admitted happens to be in.
+  - expression: 'authorizer.requestResource.check("update").reason()'

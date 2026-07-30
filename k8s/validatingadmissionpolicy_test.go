@@ -275,9 +275,34 @@ func TestValidationEval(t *testing.T) {
 						`authorizer.group("apps").resource("").check("update").allowed(): ` +
 						"resource must not be empty"),
 				},
+				{
+					IsError: true,
+					Error: strptr("unexpected error evaluating expression " +
+						`authorizer.group("apps").resource("deployments").check("").allowed(): ` +
+						"must specify check"),
+				},
+				{
+					IsError: true,
+					Error: strptr("unexpected error evaluating expression " +
+						`authorizer.path("/healthz").check("").allowed(): ` +
+						"must specify check"),
+				},
 			},
-			// The erroring validation reports no cost, so it adds nothing.
+			// The three erroring validations report no cost, so they add nothing.
 			Cost: uint64ptr(1750021),
+		},
+	}, {
+		// The Request tab names the resource and the namespace but no name, so
+		// requestResource is the check on that namespace with no name.
+		name:       "authorizer.requestResource takes the namespace from the request",
+		policy:     "authorizer3 policy.yaml",
+		orig:       "",
+		updated:    "authorizer3 updated.yaml",
+		request:    "authorizer3 request.yaml",
+		authorizer: "authorizer3 authorizer.yaml",
+		expected: k8s.EvalResponse{
+			Validations: []*k8s.EvalResult{{Result: "namespace-scope", Cost: uint64ptr(350002)}},
+			Cost:        uint64ptr(350002),
 		},
 	}, {
 		// Each scoping call replaces what an earlier one in the same chain set. An
@@ -332,6 +357,46 @@ func TestValidationEval(t *testing.T) {
 		expected: k8s.EvalResponse{
 			Validations: []*k8s.EvalResult{{Result: "scale-in-default", Cost: uint64ptr(350002)}},
 			Cost:        uint64ptr(350002),
+		},
+	}, {
+		// The Request tab names the object and its namespace, so requestResource is
+		// the check on that name in that namespace. The Request tab is the only
+		// source; the object is not consulted.
+		name:       "authorizer.requestResource takes the name and namespace from the request",
+		policy:     "authorizer9 policy.yaml",
+		orig:       "",
+		updated:    "authorizer9 updated.yaml",
+		request:    "authorizer9 request.yaml",
+		authorizer: "authorizer9 authorizer.yaml",
+		expected: k8s.EvalResponse{
+			Validations: []*k8s.EvalResult{{Result: "nginx-in-default", Cost: uint64ptr(350002)}},
+			Cost:        uint64ptr(350002),
+		},
+	}, {
+		// A decision the fixture writes as a deny, and one it writes as an error,
+		// read through all four of the accessors a policy can call on it.
+		name:       "authorizer decisions that are not an allow",
+		policy:     "authorizer8 policy.yaml",
+		orig:       "",
+		updated:    "authorizer8 updated.yaml",
+		authorizer: "authorizer8 authorizer.yaml",
+		expected: k8s.EvalResponse{
+			// A resource chain costs 350004 and a path chain 350003: the check is
+			// 350000, reading authorizer is 1, and each call around it -- the scoping
+			// calls and the accessor -- is 1.
+			Validations: []*k8s.EvalResult{
+				{Result: false, Cost: uint64ptr(350004)},
+				{Result: "denied-by-the-fixture", Cost: uint64ptr(350004)},
+				{Result: false, Cost: uint64ptr(350004)},
+				{Result: "", Cost: uint64ptr(350004)},
+				{Result: true, Cost: uint64ptr(350004)},
+				{Result: "the webhook authorizer is unavailable", Cost: uint64ptr(350004)},
+				{Result: false, Cost: uint64ptr(350004)},
+				{Result: "", Cost: uint64ptr(350004)},
+				{Result: false, Cost: uint64ptr(350003)},
+				{Result: "the /healthz path is for the kubelet", Cost: uint64ptr(350003)},
+			},
+			Cost: uint64ptr(3500038),
 		},
 	}, {
 		name:       "test an expression using allowed authorizer checks",

@@ -1,0 +1,17 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: "request-resource-identity.example.com"
+webhooks:
+- name: "request-resource-identity.example.com"
+  matchConditions:
+  # The Request tab names the resource and the namespace, so requestResource is
+  # the check in that namespace rather than at the cluster scope.
+  - name: "authorized-in-the-requests-namespace"
+    expression: 'authorizer.requestResource.check("update").allowed()'
+  clientConfig:
+    service:
+      namespace: example-namespace
+      name: example-service
+  admissionReviewVersions: ["v1"]
+  sideEffects: None

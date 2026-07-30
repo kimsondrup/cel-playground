@@ -19,3 +19,7 @@ spec:
   - expression: 'authorizer.requestResource.check("update").reason()'
   # An empty resource is an error on a cluster, not a denial.
   - expression: 'authorizer.group("apps").resource("").check("update").allowed()'
+  # An empty verb is an error here too. Kubernetes asks the cluster about the empty
+  # verb instead; the playground has nothing to ask.
+  - expression: 'authorizer.group("apps").resource("deployments").check("").allowed()'
+  - expression: 'authorizer.path("/healthz").check("").allowed()'

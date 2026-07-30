@@ -1,0 +1,22 @@
+paths:
+groups:
+  apps:
+    resources:
+      deployments:
+        checks:
+          # The cluster scope: reached by a check narrowed to neither a namespace
+          # nor a name.
+          "":
+            "":
+              update:
+                decision: allow
+                reason: cluster-scope
+          # The default namespace and no name: reached by a check narrowed to a
+          # namespace but not to a name. A check that names an object looks under
+          # that name instead -- this fixture has no wildcards.
+          default:
+            "":
+              update:
+                decision: allow
+                reason: namespace-scope
+serviceAccounts:

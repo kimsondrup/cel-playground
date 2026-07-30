@@ -1,0 +1,11 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: "request-resource-identity.example.com"
+spec:
+  failurePolicy: Fail
+  validations:
+  # authorizer.requestResource is a check on the resource this request is about.
+  # The Request tab names the resource and the namespace but no name, so this is
+  # the check on that namespace with no name. Nothing comes from the object.
+  - expression: 'authorizer.requestResource.check("update").reason()'

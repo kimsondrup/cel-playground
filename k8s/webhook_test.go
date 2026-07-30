@@ -94,6 +94,21 @@ func TestWebhookEval(t *testing.T) {
 			Cost: uint64ptr(350006),
 		},
 	}, {
+		// The Request tab names the resource and the namespace, so requestResource
+		// is the check in that namespace. Only that entry allows, so allowed() says
+		// which one answered.
+		name:       "test a single webhook, match conditions rely on authorizer.requestResource",
+		webhook:    "webhook5.yaml",
+		updated:    "updated5.yaml",
+		request:    "request5.yaml",
+		authorizer: "authorizer5.yaml",
+		expected: k8s.EvalResponse{
+			WebhookMatchConditions: [][]*k8s.EvalResult{{
+				{Name: strptr("authorized-in-the-requests-namespace"), Result: true, Cost: uint64ptr(350002)},
+			}},
+			Cost: uint64ptr(350002),
+		},
+	}, {
 		name:       "test multiple webhooks, match conditions will rely on request and authorizer information and will be successful",
 		webhook:    "multi webhook1.yaml",
 		updated:    "multi updated1.yaml",
