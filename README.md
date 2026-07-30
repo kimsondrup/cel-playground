@@ -35,6 +35,11 @@ Admission Policy mode in particular:
   it, so only `matchConditions` can stop one from running.
 - `params` / `paramKind` have no input, so an expression reading `params` errors
   and `has(params...)` is false.
+- Authorizer checks ignore `fieldSelector()` and `labelSelector()`: the Authorizer
+  tab has no way to express a selector. In `matchConditions` and `variables` those
+  functions do not exist at all and the expression fails with `no such overload`;
+  inside a mutation they do exist, and the check is answered from the un-narrowed
+  entry, which is warned about in the result panel.
 - `reinvocationPolicy` changes nothing: each mutation runs exactly once.
 - `failurePolicy` changes nothing: there is no request to reject, so a failed
   mutation is reported and the rest still run, where a cluster with the default

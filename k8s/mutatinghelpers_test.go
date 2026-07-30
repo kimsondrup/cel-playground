@@ -16,6 +16,7 @@ package k8s
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -23,6 +24,8 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
@@ -273,6 +276,96 @@ func TestMutationAuthorizer(t *testing.T) {
 			}
 			if reason != tt.wantReason {
 				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestMutationAuthorizerNoticesSelectors pins what the adapter does with a
+// fieldSelector() / labelSelector() narrowing: it answers from the un-narrowed
+// entry anyway, and records that it did so the caller can warn. Without the
+// record the wrong answer is silent, since a narrowed check returns an ordinary
+// decision.
+func TestMutationAuthorizerNoticesSelectors(t *testing.T) {
+	fieldRequirements := fields.OneTermEqualSelector("spec.nodeName", "node-a").Requirements()
+	labelRequirements, err := labels.ParseToRequirements("env=prod")
+	if err != nil {
+		t.Fatalf("failed to build label requirements: %v", err)
+	}
+
+	base := authorizer.AttributesRecord{
+		ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+	}
+	config := &Authorizer{Groups: map[string]*GroupCheck{
+		"apps": {Resources: map[string]*ResourceCheck{
+			"deployments": {Checks: map[string]map[string]map[string]*Decision{
+				"": {"": {"update": {Decision: "allow", Reason: "un-narrowed"}}},
+			}},
+		}},
+	}}
+
+	tests := []struct {
+		name         string
+		narrow       func(*authorizer.AttributesRecord)
+		wantNarrowed bool
+	}{{
+		name:         "an un-narrowed check is not recorded",
+		narrow:       func(*authorizer.AttributesRecord) {},
+		wantNarrowed: false,
+	}, {
+		name: "a field selector is recorded",
+		narrow: func(attr *authorizer.AttributesRecord) {
+			attr.FieldSelectorRequirements = fieldRequirements
+		},
+		wantNarrowed: true,
+	}, {
+		name: "a label selector is recorded",
+		narrow: func(attr *authorizer.AttributesRecord) {
+			attr.LabelSelectorRequirements = labelRequirements
+		},
+		wantNarrowed: true,
+	}, {
+		// Upstream records an unparseable selector on the attributes rather than
+		// refusing the call, so ignoring it is the same silence as ignoring a
+		// valid one.
+		name: "an unparseable selector is recorded",
+		narrow: func(attr *authorizer.AttributesRecord) {
+			attr.LabelSelectorParsingErr = errors.New("found '!!!', expected: identifier")
+		},
+		wantNarrowed: true,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attributes := base
+			tt.narrow(&attributes)
+
+			adapter := &mutationAuthorizer{config: config, mutation: 2}
+			decision, reason, err := adapter.Authorize(context.Background(), attributes)
+			if err != nil {
+				t.Fatalf("Authorize() error = %v", err)
+			}
+			// The un-narrowed answer either way: that is the finding, not an
+			// aspiration.
+			if decision != authorizer.DecisionAllow || reason != "un-narrowed" {
+				t.Errorf("Authorize() = (%v, %q), want (Allow, \"un-narrowed\")", decision, reason)
+			}
+
+			var want []int
+			if tt.wantNarrowed {
+				want = []int{2}
+			}
+			if !reflect.DeepEqual(adapter.narrowedMutations, want) {
+				t.Errorf("narrowedMutations = %v, want %v", adapter.narrowedMutations, want)
+			}
+
+			// A second check of the same mutation must not be recorded twice: each
+			// mutation is evaluated once for its cost and once inside the patcher.
+			if _, _, err := adapter.Authorize(context.Background(), attributes); err != nil {
+				t.Fatalf("Authorize() error = %v", err)
+			}
+			if !reflect.DeepEqual(adapter.narrowedMutations, want) {
+				t.Errorf("narrowedMutations after a repeat check = %v, want %v", adapter.narrowedMutations, want)
 			}
 		})
 	}

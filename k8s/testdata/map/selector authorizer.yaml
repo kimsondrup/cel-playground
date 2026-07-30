@@ -1,0 +1,10 @@
+groups:
+  "":
+    resources:
+      pods:
+        checks:
+          "":
+            "":
+              list:
+                decision: allow
+                reason: un-narrowed

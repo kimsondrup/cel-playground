@@ -399,6 +399,45 @@ func TestMutationEval(t *testing.T) {
 		failurePolicy:      "Ignore",
 		reinvocationPolicy: "IfNeeded",
 		wantDiff:           true,
+	}, {
+		// fieldSelector() narrows an authorizer check on a cluster, where RBAC can
+		// grant a verb only for a given selector. Nothing reads the selector here
+		// -- the Authorizer tab has no syntax for one -- so the check answers from
+		// the un-narrowed entry, which is indistinguishable from a real answer:
+		// `allowed()` is true and `reason()` is the un-narrowed entry's own. The
+		// warning is the only thing that says so.
+		name:       "a selector-narrowed authorizer check in a mutation is warned about",
+		policy:     "selector mutation policy.yaml",
+		object:     "object.yaml",
+		authorizer: "selector authorizer.yaml",
+		mutations: []mutationExpectation{{
+			patchType: "ApplyConfiguration",
+			contains: []string{
+				"playground/narrowed: \"true\"",
+				"playground/reason: un-narrowed",
+			},
+		}},
+		wantWarning: "Mutation 1 narrows an authorizer check with fieldSelector() or labelSelector()",
+		wantDiff:    true,
+	}, {
+		// The same expression in a matchCondition fails loudly instead: those go
+		// through the playground's own receiver types, which implement no such
+		// function. Two different wrong answers to one expression, so both halves
+		// are pinned. An errored matchCondition counts as not matched, so no
+		// mutation runs and no warning is added on top of the error.
+		name:       "a selector-narrowed authorizer check in a matchCondition has no overload",
+		policy:     "selector matchcondition policy.yaml",
+		object:     "object.yaml",
+		authorizer: "selector authorizer.yaml",
+		expectedMatchConditions: []*k8s.EvalResult{{
+			Error: strptr("unexpected error evaluating expression " +
+				"authorizer.group('').resource('pods').fieldSelector('spec.nodeName=node-a')" +
+				".check('list').allowed(): no such overload"),
+			IsError: true,
+		}},
+		mutations:   nil,
+		wantNoFinal: true,
+		wantDiff:    false,
 	}}
 
 	for _, tt := range tests {

@@ -54,11 +54,19 @@ type mutationAuthorizer struct {
 	// signal that the expression asked about a service account rather than about
 	// whoever is making the request.
 	requestUser string
+
+	// mutation is the 1-based position of the mutation currently being
+	// evaluated, and narrowedMutations collects the ones that asked a
+	// selector-narrowed question. See noteSelectors. Only ever touched from the
+	// single goroutine driving one evaluation.
+	mutation          int
+	narrowedMutations []int
 }
 
 var _ authorizer.Authorizer = &mutationAuthorizer{}
 
 func (m *mutationAuthorizer) Authorize(_ context.Context, attr authorizer.Attributes) (authorizer.Decision, string, error) {
+	m.noteSelectors(attr)
 	config := m.configFor(attr)
 	if config == nil {
 		return authorizer.DecisionNoOpinion, "", nil
@@ -79,6 +87,38 @@ func (m *mutationAuthorizer) Authorize(_ context.Context, attr authorizer.Attrib
 		return authorizer.DecisionDeny, decision.Reason, nil
 	}
 	return authorizer.DecisionNoOpinion, decision.Reason, nil
+}
+
+// noteSelectors records that the expression narrowed this check with
+// fieldSelector() or labelSelector(). Nothing below reads the selectors: the
+// Authorizer tab has no syntax for one, so the answer comes from the un-narrowed
+// entry, which is the wrong answer whenever the selector is what a cluster's RBAC
+// turns on. The caller turns this into a warning, because that wrongness is
+// otherwise invisible -- the check returns an ordinary decision.
+//
+// Only the mutation path can get here at all. In a matchCondition or a variable
+// the playground's own receiver types (k8s/authorizer.go) implement no such
+// function and the expression fails with "no such overload"; spec.mutations go
+// to the apiserver's compiler with the full base environment, where
+// library.AuthzSelectors is present, so the same expression compiles and answers.
+//
+// A selector that does not parse counts too. Upstream records the parse failure
+// on the attributes rather than rejecting the call, leaving it to the authorizer
+// to act on, and ignoring it is the same silence.
+func (m *mutationAuthorizer) noteSelectors(attr authorizer.Attributes) {
+	fieldReqs, fieldErr := attr.GetFieldSelector()
+	labelReqs, labelErr := attr.GetLabelSelector()
+	if len(fieldReqs) == 0 && len(labelReqs) == 0 && fieldErr == nil && labelErr == nil {
+		return
+	}
+	// Each mutation is evaluated twice -- once to measure its cost, once inside
+	// the patcher -- and an expression may check several times, so the same
+	// mutation must only be recorded once. mutation never decreases, so the last
+	// entry is the only one it can repeat.
+	if last := len(m.narrowedMutations) - 1; last >= 0 && m.narrowedMutations[last] == m.mutation {
+		return
+	}
+	m.narrowedMutations = append(m.narrowedMutations, m.mutation)
 }
 
 // configFor resolves `authorizer.serviceAccount(namespace, name)`. That function

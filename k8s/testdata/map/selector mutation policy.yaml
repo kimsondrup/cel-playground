@@ -1,0 +1,17 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "selector-narrowed-check-in-a-mutation"
+spec:
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{
+          metadata: Object.metadata{
+            annotations: {
+              "playground/narrowed": string(authorizer.group('').resource('pods').fieldSelector('spec.nodeName=node-a').check('list').allowed()),
+              "playground/reason": authorizer.group('').resource('pods').fieldSelector('spec.nodeName=node-a').check('list').reason()
+            }
+          }
+        }

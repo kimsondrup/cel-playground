@@ -452,12 +452,11 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 	patchDeclarations := declarations
 	patchDeclarations.HasPatchTypes = true
 
-	bindings := plugincel.OptionalVariableBindings{
-		Authorizer: &mutationAuthorizer{
-			config:      authorizer,
-			requestUser: request.UserInfo.Username,
-		},
+	authorizerAdapter := &mutationAuthorizer{
+		config:      authorizer,
+		requestUser: request.UserInfo.Username,
 	}
+	bindings := plugincel.OptionalVariableBindings{Authorizer: authorizerAdapter}
 	objectInterfaces := admission.NewObjectInterfacesFromScheme(scheme.Scheme)
 	typeConverter, schemaBacked := typeConverterFor(gvk)
 
@@ -517,6 +516,10 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 	for _, mutation := range policy.Spec.Mutations {
 		result := &EvalMutationResult{PatchType: string(mutation.PatchType)}
 		results = append(results, result)
+		// Lets the authorizer adapter attribute a selector-narrowed check to the
+		// mutation that asked it, whichever of the paths below the mutation
+		// leaves by.
+		authorizerAdapter.mutation = len(results)
 
 		evaluator, patcher, err := compileMutation(compiler, mutation, patchDeclarations)
 		if err != nil {
@@ -591,6 +594,19 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 
 		// Feed this mutation's output into the next one.
 		versionedAttributes.VersionedObject = patched
+	}
+
+	// A selector-narrowed authorizer check answers here instead of failing, and
+	// answers from the un-narrowed fixture entry, so the decision looks ordinary
+	// and can be the opposite of the cluster's. Reported per mutation, since
+	// which mutation to distrust is the useful part.
+	for _, narrowed := range authorizerAdapter.narrowedMutations {
+		warnings = append(warnings, fmt.Sprintf(
+			"Mutation %d narrows an authorizer check with fieldSelector() or labelSelector(). "+
+				"The Authorizer tab has no way to express a selector, so the check was answered "+
+				"from the un-narrowed entry rather than refused -- a cluster that grants the verb "+
+				"only for some selectors would answer differently, so do not trust that decision.",
+			narrowed))
 	}
 
 	// A cluster does not stop at reporting a failed mutation: unless
