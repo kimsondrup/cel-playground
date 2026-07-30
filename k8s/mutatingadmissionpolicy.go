@@ -591,9 +591,11 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 		undeclared, more := undeclaredFields(gvk, patched)
 		if added := without(undeclared, objectUndeclared); len(added) > 0 {
 			warnings = append(warnings, fmt.Sprintf(
-				"Mutation %d writes fields the schema for %s does not declare: %s%s. A cluster "+
-					"would reject the mutation rather than apply it, so check for a misspelling "+
-					"before trusting this result.",
+				"Mutation %d writes fields the schema for %s does not declare: %s%s. The "+
+					"playground's schema is only as new as the client-go it was built against, "+
+					"so a field from a newer Kubernetes would be applied by a cluster -- but a "+
+					"misspelled one would be rejected rather than applied, and a mutation "+
+					"expression has no compile-time field checking to catch that.",
 				len(results), gvk.GroupVersion().String()+" "+gvk.Kind,
 				strings.Join(added, ", "), andPossiblyMore(more)))
 		}
