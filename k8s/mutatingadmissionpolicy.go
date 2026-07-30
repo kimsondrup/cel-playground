@@ -588,16 +588,19 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 		// expression is the likeliest place for a typo, since Object{} and
 		// JSONPatch paths have no compile-time field checking. Fields the input
 		// object already carried are left to the object-level warning above.
-		if undeclared, more := undeclaredFields(gvk, patched); len(undeclared) > 0 {
-			if added := without(undeclared, objectUndeclared); len(added) > 0 {
-				warnings = append(warnings, fmt.Sprintf(
-					"Mutation %d writes fields the schema for %s does not declare: %s%s. A cluster "+
-						"would reject the mutation rather than apply it, so check for a misspelling "+
-						"before trusting this result.",
-					len(results), gvk.GroupVersion().String()+" "+gvk.Kind,
-					strings.Join(added, ", "), andPossiblyMore(more)))
-			}
+		undeclared, more := undeclaredFields(gvk, patched)
+		if added := without(undeclared, objectUndeclared); len(added) > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"Mutation %d writes fields the schema for %s does not declare: %s%s. A cluster "+
+					"would reject the mutation rather than apply it, so check for a misspelling "+
+					"before trusting this result.",
+				len(results), gvk.GroupVersion().String()+" "+gvk.Kind,
+				strings.Join(added, ", "), andPossiblyMore(more)))
 		}
+		// What this mutation leaves behind is the next one's input, so it becomes
+		// the baseline to subtract there. Without this, one typo is blamed on
+		// every mutation that runs after it as well as the one that wrote it.
+		objectUndeclared = undeclared
 
 		mutatedYAML, err := marshalObjectYAML(patched)
 		if err != nil {

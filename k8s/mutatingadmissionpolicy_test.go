@@ -460,6 +460,35 @@ func TestMutationEval(t *testing.T) {
 		mutations:        nil,
 		wantNoFinal:      true,
 		wantDiff:         false,
+	}, {
+		// Only the mutation that wrote the undeclared field is named. The
+		// second one inherits it in its input and must not be blamed for it.
+		name:   "an undeclared field is blamed on the mutation that wrote it",
+		policy: "chained typo policy.yaml",
+		object: "object.yaml",
+		mutations: []mutationExpectation{{
+			patchType: "JSONPatch",
+			contains:  []string{"replicaz: 3"},
+		}, {
+			patchType: "ApplyConfiguration",
+			contains:  []string{"second: ran", "replicaz: 3"},
+		}},
+		wantWarning:   "Mutation 1",
+		finalContains: []string{"second: ran"},
+		wantDiff:      true,
+	}, {
+		// The object arrived with the undeclared field, so it is reported once
+		// against the object. A mutation that never touched it must not be
+		// blamed for it a second time -- the table asserts a single warning.
+		name:   "an undeclared field the object arrived with is not blamed on a mutation",
+		policy: "applyconfig label policy.yaml",
+		object: "undeclared field object.yaml",
+		mutations: []mutationExpectation{{
+			patchType: "ApplyConfiguration",
+			contains:  []string{"environment: production", "replicazz: 2"},
+		}},
+		wantWarning: "The schema for apps/v1 Deployment does not declare: .spec.replicazz",
+		wantDiff:    true,
 	}}
 
 	for _, tt := range tests {
