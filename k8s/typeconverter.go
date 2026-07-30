@@ -49,13 +49,14 @@ import (
 // client-go release, so it cannot drift from the API types the rest of this
 // binary is compiled against.
 //
-// This is the same information the apiserver merges with, not an approximation
-// of it. Both derive from the +listType / +listMapKey / +patchStrategy markers
-// on the k8s.io/api Go types, and a field-by-field comparison against a real
-// /openapi/v3 document found identical merge semantics for every field present
-// in both. The definitions the apiserver itself builds from live in
-// k8s.io/kubernetes/pkg/generated/openapi, which is not importable, so this is
-// also the only importable source of them.
+// This schema and the /openapi/v3 document an apiserver serves have the same
+// origin: both are generated from the +listType / +listMapKey / +patchStrategy
+// markers on the k8s.io/api Go types. That is why it is not an approximation --
+// but it is a shared origin, not a checked equivalence, and nothing here
+// compares the two documents. What is pinned instead is the behaviour that
+// matters: the tests assert that a keyed list merges by key. The definitions the
+// apiserver itself builds from live in k8s.io/kubernetes/pkg/generated/openapi,
+// which is not importable, so this is the only importable source of them.
 //
 // Kinds the scheme does not recognize -- custom resources -- have no schema at
 // all here and fall back to a deduced converter, which merges atomically. That
