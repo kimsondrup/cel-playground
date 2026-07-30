@@ -201,7 +201,9 @@
   margin: 0;
   max-height: var(--result-body-max-height);
   overflow: auto;
-  white-space: normal;
+  /* Newlines are honoured for the same reason as the note below, though a
+     warning is one sentence today and has none. */
+  white-space: pre-line;
   overflow-wrap: break-word;
   line-height: 1.5;
 }
@@ -214,7 +216,10 @@
   margin: 0;
   max-height: var(--result-body-max-height);
   overflow: auto;
-  white-space: normal;
+  /* pre-line, not normal: the caveats arrive as one string with a newline
+     between each, and each needs its own line. Other whitespace still
+     collapses, so the sentences wrap to the panel. */
+  white-space: pre-line;
   overflow-wrap: break-word;
   line-height: 1.5;
   /* Muted, but still prose to read: 4.8:1 on the expanded card. */
