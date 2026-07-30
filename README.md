@@ -47,6 +47,14 @@ Admission Policy mode in particular:
 - The object is used exactly as typed. A cluster applies API defaults before
   admission runs and again after every mutation, so a `!has(...)` guard can look
   like it fires here when it would not.
+- The matchConditions and the mutations are given the Request and Namespace tabs
+  by different routes: the matchConditions get them as typed, the mutations get
+  an admission attribute record built the way a cluster builds one, where a
+  missing name or namespace comes from the object and unset fields are absent
+  rather than empty. An expression can therefore answer differently depending on
+  which half of the policy it sits in. Filling both tabs in removes the
+  difference for everything except `has()` on a field that was never set, and
+  the result panel warns when an expression reads a tab that was left incomplete.
 - Merge semantics come from the schemas compiled into this binary, which cover
   the built-in APIs only. Custom resources fall back to treating lists as atomic,
   which is warned about in the result panel.

@@ -789,6 +789,97 @@ spec:
 // reads is left alone. A cluster binds spec.variables lazily and never
 // evaluates one nothing asks for, so it cannot fail there; evaluating it here
 // would report an error against a variable that a cluster would not have run.
+// TestTabWarningsNameTheDivergence covers the two environments reading one tab
+// differently. The matchConditions are given the tabs as typed; the mutations
+// are given an admission attribute record, which has no blanks to offer and
+// takes a name, a namespace and a resource from the object instead. An
+// expression reading one of those answers differently on each side, and the
+// warning is the only thing that says so -- especially when the matchCondition
+// is what closed the gate, so there is no mutation and no diff to look at.
+func TestTabWarningsNameTheDivergence(t *testing.T) {
+	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: prod\nspec:\n  replicas: 1\n")
+	mutation := `
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{metadata: Object.metadata{labels: {"ran": "yes"}}}
+`
+	policy := func(matchCondition string) []byte {
+		return []byte(`apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: tabs
+spec:
+  failurePolicy: Ignore
+  reinvocationPolicy: Never
+  matchConditions:
+  - name: gate
+    expression: "` + matchCondition + `"` + mutation)
+	}
+
+	tests := []struct {
+		name           string
+		matchCondition string
+		namespace      []byte
+		want           string
+	}{{
+		// The gate closes because request.name is empty on this side while the
+		// mutation would have read "nginx".
+		name:           "a matchCondition reading the request tab",
+		matchCondition: "request.name == 'nginx'",
+		want:           "The Request tab leaves",
+	}, {
+		name:           "a matchCondition reading an authorizer check keyed on the request",
+		matchCondition: "authorizer.requestResource.check('update').allowed()",
+		want:           "The Request tab leaves",
+	}, {
+		// Nothing reads the request, so nothing could have observed the
+		// difference and the warning would be noise.
+		name:           "a matchCondition reading only the object",
+		matchCondition: "object.metadata.name == 'nginx'",
+		want:           "",
+	}, {
+		name:           "a matchCondition reading a nameless namespace tab",
+		matchCondition: "namespaceObject.metadata.name == 'prod'",
+		namespace:      []byte(""),
+		want:           "The Namespace tab names no namespace",
+	}, {
+		// Named, so the field the expression reads is set on both sides.
+		name:           "a matchCondition reading a named namespace tab",
+		matchCondition: "namespaceObject.metadata.name == 'prod'",
+		namespace:      []byte("metadata:\n  name: prod\n"),
+		want:           "",
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The Request tab is left out entirely, which is the case the
+			// warning is about.
+			out, err := k8s.EvalMutatingAdmissionPolicy(policy(tt.matchCondition), nil, object, tt.namespace, nil, nil)
+			if err != nil {
+				t.Fatalf("EvalMutatingAdmissionPolicy() error = %v", err)
+			}
+			var response k8s.EvalResponse
+			if err := json.Unmarshal([]byte(out), &response); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			var got string
+			for _, warning := range response.Warnings {
+				if strings.Contains(warning, " tab ") || strings.Contains(warning, " tab is") {
+					got = warning
+				}
+			}
+			switch {
+			case tt.want == "" && got != "":
+				t.Errorf("got warning %q, want none -- no expression reads the tab", got)
+			case tt.want != "" && !strings.Contains(got, tt.want):
+				t.Errorf("warning = %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUnreferencedVariableIsNotEvaluated(t *testing.T) {
 	policy := []byte(`apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingAdmissionPolicy

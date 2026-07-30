@@ -230,6 +230,14 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 			strings.Join(unknown, ", ")))
 	}
 
+	// Raised whether or not a mutation ran. A matchCondition that read the tab
+	// differently is precisely what stops one running, and that is the case
+	// where the reader has least to go on: no mutation, no diff, and a gate that
+	// closed for a reason nothing on screen explains.
+	if len(celInfo.mutations) > 0 {
+		warnings = append(warnings, tabWarnings(celInfo, request, namespaceObject, objectValue)...)
+	}
+
 	if matchConditions && len(celInfo.mutations) > 0 {
 		// The mutations run in the apiserver's environment, not this one, so a
 		// variable only they read would never be evaluated here and the panel
@@ -430,6 +438,95 @@ func mutationVariables(policy *admissionregistrationv1.MutatingAdmissionPolicy, 
 	return names
 }
 
+// displayExpressions returns the expressions this environment evaluates: the
+// matchConditions and spec.variables. The mutations are compiled and run by the
+// apiserver's own machinery and are not among them.
+func displayExpressions(celInfo *CelInformation) []string {
+	expressions := make([]string, 0, len(celInfo.matchConditions)+len(celInfo.variables))
+	for _, matchCondition := range celInfo.matchConditions {
+		expressions = append(expressions, matchCondition.expression)
+	}
+	for _, variable := range celInfo.variables {
+		expressions = append(expressions, variable.expression)
+	}
+	return expressions
+}
+
+// readsAny reports whether any expression mentions one of the given names. It
+// is a plain substring search, so it over-reports -- a name inside a string
+// literal counts -- which for a warning means the occasional unnecessary one
+// rather than a missing one.
+func readsAny(expressions []string, names ...string) bool {
+	for _, expression := range expressions {
+		for _, name := range names {
+			if strings.Contains(expression, name) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// namespaceName returns the name the Namespace tab gives, or "" for a tab that
+// names none -- including one left empty, which decodes to every field present
+// and blank rather than to nothing at all.
+func namespaceName(namespaceObject map[string]any) string {
+	metadata, ok := namespaceObject["metadata"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := metadata["name"].(string)
+	return name
+}
+
+// tabWarnings reports where the matchConditions and the mutations were given
+// different answers for the same tab, which happens when a tab is left
+// incomplete: this environment binds it as typed, while the mutations read an
+// admission attribute record built with the object filling the gaps.
+//
+// Only raised where an expression on the display side actually reads the tab in
+// question, since otherwise nothing could have observed the difference.
+func tabWarnings(celInfo *CelInformation, request, namespaceObject, objectValue map[string]any) []string {
+	expressions := displayExpressions(celInfo)
+	var warnings []string
+
+	blank := func(field string) bool {
+		value, ok := request[field].(string)
+		return !ok || value == ""
+	}
+	object := &unstructured.Unstructured{Object: objectValue}
+	missing := []string{}
+	if blank("name") && object.GetName() != "" {
+		missing = append(missing, "name")
+	}
+	if blank("namespace") && object.GetNamespace() != "" {
+		missing = append(missing, "namespace")
+	}
+	if blank("operation") {
+		missing = append(missing, "operation")
+	}
+	if resource, ok := request["resource"].(map[string]any); !ok || resource["resource"] == "" || resource["resource"] == nil {
+		missing = append(missing, "resource")
+	}
+	if len(missing) > 0 && readsAny(expressions, "request", "authorizer.requestResource") {
+		warnings = append(warnings, fmt.Sprintf(
+			"The Request tab leaves %s unset, and the matchConditions and the mutations do not "+
+				"read that the same way: a matchCondition sees the tab as typed, while a mutation "+
+				"sees what a cluster would have sent -- the object's own name and namespace, the "+
+				"resource guessed from its kind, and CREATE. Fill the tab in to have both read "+
+				"the same request.", strings.Join(missing, ", ")))
+	}
+
+	if namespaceName(namespaceObject) == "" && readsAny(expressions, "namespaceObject") {
+		warnings = append(warnings, "The Namespace tab names no namespace, and the matchConditions "+
+			"and the mutations do not read that the same way: a matchCondition is given every "+
+			"field, empty, while a mutation is given only the fields that were set -- so reading "+
+			"one there fails outright rather than returning an empty string. Name the namespace "+
+			"to have both read the same object.")
+	}
+	return warnings
+}
+
 var unknownFieldPattern = regexp.MustCompile(`unknown field "([^"]+)"`)
 
 // mutationRun is the outcome of evaluating a policy's spec.mutations.
@@ -473,10 +570,17 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 		}
 	}
 
-	// The Request tab wins wherever it is filled in, so that `request.name`,
-	// `request.namespace` and `request.kind` -- and the authorizer checks keyed
-	// on them -- report the same values inside a mutation expression as they do
-	// in a matchCondition, which reads the tab directly.
+	// The Request tab wins wherever it is filled in, so `request.name`,
+	// `request.namespace` and `request.kind` read there the same as they do in a
+	// matchCondition, which is handed the tab directly.
+	//
+	// Where the tab leaves a field out the two part company: an admission
+	// attribute record has no empty fields to offer, so a name and a namespace
+	// come from the object and the resource is guessed from its kind, while a
+	// matchCondition still sees the blank the tab holds. Both halves are right
+	// about their own side -- a cluster's request does carry a name, and the tab
+	// is what the reader asked for -- so requestTabWarning says so rather than
+	// either one silently winning.
 	gvr := requestResource(request, gvk)
 	name := cmp.Or(request.Name, object.GetName())
 	objectNamespace := cmp.Or(request.Namespace, object.GetNamespace())
@@ -845,8 +949,15 @@ func requestKind(kind GVKType, fallback schema.GroupVersionKind) schema.GroupVer
 // but an *empty* input still yields a zero-valued namespace. That distinction
 // is load-bearing, because cmd/wasm/main.go sends []byte("") for a blank tab,
 // never nil. Guarding on emptiness here instead would leave the two
-// environments disagreeing about the same blank tab -- a matchCondition would
-// see `namespaceObject.metadata` while a mutation in the same policy would not.
+// environments disagreeing about whether the same blank tab is there at all --
+// a matchCondition would see `namespaceObject.metadata` while a mutation in the
+// same policy would not.
+//
+// It aligns only that much. The typed namespace marshals with omitempty and the
+// matchCondition side does not, so a field left unset is absent here and
+// present-and-empty there: has(namespaceObject.metadata.labels) answers
+// differently on each side, and a blank tab has no name to read at all. That is
+// what tabWarnings tells the reader about.
 func decodeNamespaceObject(input []byte) (*corev1.Namespace, error) {
 	if input == nil {
 		return nil, nil
