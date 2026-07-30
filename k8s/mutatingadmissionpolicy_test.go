@@ -752,7 +752,9 @@ spec:
   mutations:
   - patchType: ApplyConfiguration
     applyConfiguration:
-      expression: "1 + 1"
+      # Reads the variable, so the variable is evaluated for display, and is
+      # not an Object, so the mutation itself never gets as far as running.
+      expression: "variables.appName"
 `)
 	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\nspec:\n  replicas: 1\n")
 
@@ -776,5 +778,49 @@ spec:
 	}
 	if *response.Cost != variableCost {
 		t.Errorf("total cost = %d, want %d (the variable the panel charges for)", *response.Cost, variableCost)
+	}
+}
+
+// TestUnreferencedVariableIsNotEvaluated pins that a variable no expression
+// reads is left alone. A cluster binds spec.variables lazily and never
+// evaluates one nothing asks for, so it cannot fail there; evaluating it here
+// would report an error against a variable that a cluster would not have run.
+func TestUnreferencedVariableIsNotEvaluated(t *testing.T) {
+	policy := []byte(`apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: unreferenced
+spec:
+  variables:
+  - name: used
+    expression: "'production'"
+  - name: unused
+    expression: "1 / 0"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{metadata: Object.metadata{labels: {"environment": variables.used}}}
+`)
+	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\nspec:\n  replicas: 1\n")
+
+	out, err := k8s.EvalMutatingAdmissionPolicy(policy, nil, object, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error = %v", err)
+	}
+	var response k8s.EvalResponse
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(response.MutationVariables) != 1 {
+		t.Fatalf("got %d variables, want only the one the mutation reads: %+v",
+			len(response.MutationVariables), response.MutationVariables)
+	}
+	if got := response.MutationVariables[0]; got.Name != "used" || got.IsError {
+		t.Errorf("variable = %+v, want used, evaluated without error", got)
+	}
+	if len(response.Mutations) != 1 || response.Mutations[0].IsError {
+		t.Fatalf("expected the mutation to run, got %+v", response.Mutations)
 	}
 }

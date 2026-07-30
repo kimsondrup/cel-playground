@@ -226,10 +226,14 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 	}
 
 	if matchConditions && len(celInfo.mutations) > 0 {
-		// Force the display-side variables now: they are lazily bound, and a
-		// variable only referenced from a mutation expression would otherwise
-		// never be evaluated by this environment.
-		for _, name := range variableNames {
+		// The mutations run in the apiserver's environment, not this one, so a
+		// variable only they read would never be evaluated here and the panel
+		// would have nothing to show for it. Evaluate exactly those.
+		//
+		// Only those: a cluster binds variables lazily and never evaluates one
+		// nothing reads, so forcing every declared variable would report an
+		// error against a variable that a cluster would not have run.
+		for _, name := range mutationVariables(policy, celInfo.variables) {
 			if lazyEval, ok := variableLazyEvals[name]; ok && lazyEval.val == nil {
 				lazyEval.eval(env, activations)
 			}
@@ -368,6 +372,54 @@ func unknownPolicyFields(input []byte) []string {
 // unknownFieldPattern matches the field name in sigs.k8s.io/yaml's strict-mode
 // complaint. Anything else in that error is a shape problem the lenient decode
 // above has already reported on its own terms.
+// variableReference matches a read of a spec.variables entry. Kubernetes binds
+// them under a map called variables, so every read is variables.<name> and a
+// name is an ordinary CEL identifier.
+var variableReference = regexp.MustCompile(`\bvariables\.([a-zA-Z_][a-zA-Z0-9_]*)`)
+
+// mutationVariables returns the spec.variables entries the policy's mutation
+// expressions read, whether directly or through another variable, in the order
+// they are declared -- which is the order they are allowed to refer to each
+// other in.
+//
+// Reading the expressions is an over-approximation: variables.x inside a string
+// literal counts as a read. That errs towards showing a variable the mutations
+// might not reach, which costs the reader a row in the panel, rather than
+// hiding one they are looking for.
+func mutationVariables(policy *admissionregistrationv1.MutatingAdmissionPolicy, variables []CelVariableInfo) []string {
+	read := map[string]bool{}
+	var scan func(expression string)
+	scan = func(expression string) {
+		for _, match := range variableReference.FindAllStringSubmatch(expression, -1) {
+			name := match[1]
+			if read[name] {
+				continue
+			}
+			read[name] = true
+			for _, variable := range variables {
+				if variable.name == name {
+					scan(variable.expression)
+				}
+			}
+		}
+	}
+	for _, mutation := range policy.Spec.Mutations {
+		if mutation.ApplyConfiguration != nil {
+			scan(mutation.ApplyConfiguration.Expression)
+		}
+		if mutation.JSONPatch != nil {
+			scan(mutation.JSONPatch.Expression)
+		}
+	}
+	names := []string{}
+	for _, variable := range variables {
+		if read[variable.name] {
+			names = append(names, variable.name)
+		}
+	}
+	return names
+}
+
 var unknownFieldPattern = regexp.MustCompile(`unknown field "([^"]+)"`)
 
 // mutationRun is the outcome of evaluating a policy's spec.mutations.
