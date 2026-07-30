@@ -1,0 +1,13 @@
+kind:
+  group: "apps"
+  version: "v1"
+  kind: "Deployment"
+resource:
+  group: "apps"
+  version: "v1"
+  resource: "deployments"
+subResource: "scale"
+namespace: "default"
+operation: "UPDATE"
+userInfo:
+  username: "testuser"

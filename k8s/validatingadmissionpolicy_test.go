@@ -321,6 +321,19 @@ func TestValidationEval(t *testing.T) {
 			Cost: uint64ptr(2100022),
 		},
 	}, {
+		// A request for a subresource checks the subresource's own entry, not the
+		// entry for the resource holding it.
+		name:       "authorizer.requestResource takes the subresource from the request",
+		policy:     "authorizer7 policy.yaml",
+		orig:       "",
+		updated:    "authorizer7 updated.yaml",
+		request:    "authorizer7 request.yaml",
+		authorizer: "authorizer7 authorizer.yaml",
+		expected: k8s.EvalResponse{
+			Validations: []*k8s.EvalResult{{Result: "scale-in-default", Cost: uint64ptr(350002)}},
+			Cost:        uint64ptr(350002),
+		},
+	}, {
 		name:       "test an expression using allowed authorizer checks",
 		policy:     "authorizer1 policy.yaml",
 		orig:       "",

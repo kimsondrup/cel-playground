@@ -313,8 +313,20 @@ func getValOrEmpty(val any) string {
 	}
 }
 
-// getAuthorizerRequestResource builds the authorizer.requestResource value the
-// CEL environment binds, from the Request tab.
+// getAuthorizerRequestResource builds the authorizer.requestResource value the CEL
+// environment binds: a check on the group, resource, subresource, namespace and
+// name the Request tab names, the way a cluster builds it from the admission
+// attributes (NewResourceAuthorizerVal in k8s.io/apiserver/pkg/cel/library).
+//
+// Nothing is inferred from the object being admitted, so this check and the request
+// variable cannot disagree about the namespace or the name -- on a cluster each of
+// those is one attribute feeding both. A Request tab that fills both in asks exactly
+// what a cluster asks. One that leaves either out builds the check a cluster builds
+// for a request carrying neither: an empty namespace is the cluster scope, and an
+// empty name is a request that names no object, the way a create or a list does.
+// That is a different question, not a broader one -- the fixture matches its keys
+// exactly and has no wildcard, so a "" name key answers only a check that names
+// nothing.
 func getAuthorizerRequestResource(authorizer *Authorizer, request map[string]any) (*ResourceCheck, error) {
 	if authorizer == nil || request == nil {
 		return nil, nil
@@ -336,6 +348,7 @@ func getAuthorizerRequestResource(authorizer *Authorizer, request map[string]any
 	receivers := [][2]string{
 		{"group", group},
 		{"resource", resource},
+		{"subresource", getValOrEmpty(request["subResource"])},
 		{"namespace", namespace},
 		{"name", name},
 	}

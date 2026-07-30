@@ -1,0 +1,20 @@
+paths:
+groups:
+  apps:
+    resources:
+      deployments:
+        subresources:
+          scale:
+            checks:
+              default:
+                "":
+                  update:
+                    decision: allow
+                    reason: scale-in-default
+        checks:
+          default:
+            "":
+              update:
+                decision: allow
+                reason: deployments-in-default
+serviceAccounts:
