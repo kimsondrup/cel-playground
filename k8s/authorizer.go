@@ -46,7 +46,7 @@ func (a *Authorizer) Receive(function string, overload string, args []ref.Val) r
 		switch function {
 		case "path":
 			if path, ok := getString(args[0].Value()); ok {
-				if len(path) == 0 {
+				if isEmpty(path) {
 					return types.NewErr("path must not be empty")
 				} else if a.Paths != nil {
 					if pathCheck, ok := a.Paths[path]; ok && pathCheck != nil {
@@ -100,7 +100,7 @@ func (p *PathCheck) Receive(function string, overload string, args []ref.Val) re
 		if !ok {
 			return types.NoSuchOverloadErr()
 		}
-		if len(verb) == 0 {
+		if verb == "" {
 			return types.NewErr("must specify check")
 		}
 		return decisionValue(pathDecisionFor(p, verb))
@@ -118,7 +118,7 @@ var _ traits.Receiver = &GroupCheck{}
 func (g *GroupCheck) Receive(function string, overload string, args []ref.Val) ref.Val {
 	if function == "resource" && len(args) == 1 {
 		if resource, ok := getString(args[0].Value()); ok {
-			if len(resource) == 0 {
+			if isEmpty(resource) {
 				// An empty resource has no answer, so it errors rather than
 				// answering, as groupCheckResource in
 				// k8s.io/apiserver/pkg/cel/library does.
@@ -168,7 +168,7 @@ func (r *ResourceCheck) Receive(function string, overload string, args []ref.Val
 			if !ok {
 				return types.NoSuchOverloadErr()
 			}
-			if len(verb) == 0 {
+			if verb == "" {
 				return types.NewErr("must specify check")
 			}
 			return decisionValue(decisionFor(r, verb))
@@ -299,18 +299,30 @@ func initReceiver(receiver *receiverOnlyObjectVal, varType *types.Type) {
 	}
 }
 
+// getString reads a CEL argument as the string it is. The fixture matches its keys
+// exactly, so an argument keeps whatever it was written with: Kubernetes passes
+// these through to the authorizer verbatim too, and only trims to decide whether
+// one is empty.
 func getString(val any) (string, bool) {
 	if strptr, ok := val.(*string); ok {
 		if strptr == nil {
 			return "", false
 		} else {
-			return strings.TrimSpace(*strptr), ok
+			return *strptr, ok
 		}
 	} else if str, ok := val.(string); ok {
-		return strings.TrimSpace(str), ok
+		return str, ok
 	} else {
 		return "", false
 	}
+}
+
+// isEmpty reports whether an argument says nothing. Upstream's library trims for
+// exactly two guards, the ones refusing an empty path and an empty resource, and
+// takes every other argument as it is -- including the verb, which it never
+// refuses.
+func isEmpty(val string) bool {
+	return len(strings.TrimSpace(val)) == 0
 }
 
 func getValOrEmpty(val any) string {
@@ -346,7 +358,7 @@ func getAuthorizerRequestResource(authorizer *Authorizer, request map[string]any
 	resourceMap, _ := request["resource"].(map[string]any)
 	group := getValOrEmpty(resourceMap["group"])
 	resource := getValOrEmpty(resourceMap["resource"])
-	if resource == "" {
+	if isEmpty(resource) {
 		// The Request tab names no resource to build the check from. A cluster
 		// always binds requestResource, so bind a check with nothing under it,
 		// which answers no opinion. Asking the fixture for the empty resource

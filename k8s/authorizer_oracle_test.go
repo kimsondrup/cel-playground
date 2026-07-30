@@ -49,12 +49,10 @@ import (
 // apiserver compiles, so overloads that need type information fall back to
 // cel-go's defaults and the two legitimately disagree.
 //
-// Three differences between the two are stepped around rather than compared, and
-// no expression below runs into one: this repo trims every string argument where
-// Kubernetes takes it verbatim, so group(" apps ") asks about a different group
-// here; check("") errors here where Kubernetes asks about the empty verb; and
-// serviceAccount() here accepts a namespace and a name Kubernetes rejects as
-// invalid. A row that runs into one of those fails, and the
+// Two differences between the two are stepped around rather than compared, and no
+// expression below runs into one: check("") errors here where Kubernetes asks about
+// the empty verb, and serviceAccount() here accepts a namespace and a name
+// Kubernetes rejects as invalid. A row that runs into one of those fails, and the
 // disagreement is real rather than a mistake in the row.
 //
 // fieldSelector() and labelSelector() are outside the comparison altogether: they
@@ -257,6 +255,12 @@ func TestAuthorizerChainsAskWhatKubernetesAsks(t *testing.T) {
 	expressions := []string{
 		`authorizer.group("apps").resource("deployments").check("create").allowed()`,
 		`authorizer.group("").resource("pods").check("get").allowed()`,
+		// Whatever an argument was written with is what the check is about, padding
+		// included, because the fixture matches its keys exactly. A verb is an
+		// argument like any other: Kubernetes asks the cluster about it rather than
+		// refusing it, so only an empty one is refused here.
+		`authorizer.group(" apps ").resource("deployments").name(" nginx ").check("update").allowed()`,
+		`authorizer.group("apps").resource("deployments").check("  ").allowed()`,
 		`authorizer.group("apps").resource("deployments").subresource("status").check("update").allowed()`,
 		`authorizer.group("apps").resource("deployments").namespace("default").check("update").allowed()`,
 		`authorizer.group("apps").resource("deployments").namespace("default").name("nginx").check("update").allowed()`,

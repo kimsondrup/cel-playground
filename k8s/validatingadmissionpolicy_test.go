@@ -676,4 +676,21 @@ spec:
 	if response.Validations[0].IsError {
 		t.Errorf("validation errored: %v", *response.Validations[0].Error)
 	}
+
+	// A Request tab naming a whitespace-only resource names no resource either, and
+	// the guard has to refuse it the way the receiver does. Driving the receivers
+	// with it instead returns that error from building the value, which abandons
+	// every validation in the policy rather than just the ones reading it.
+	whitespace := []byte("resource:\n  group: \"apps\"\n  version: \"v1\"\n  resource: \"  \"\n")
+	out, err = k8s.EvalValidatingAdmissionPolicy(authorizerPolicy, empty, object, empty, whitespace, empty)
+	if err != nil {
+		t.Fatalf("EvalValidatingAdmissionPolicy() with a whitespace-only resource: %v", err)
+	}
+	response = k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(response.Validations) != 1 || response.Validations[0].IsError {
+		t.Errorf("validations = %+v, want one answered validation", response.Validations)
+	}
 }
