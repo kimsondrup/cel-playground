@@ -67,6 +67,9 @@ const errorTooltips = {
   mutations: "This mutation did not run.",
   mutationVariables: "This variable could not be evaluated.",
   matchConditions: "This match condition could not be evaluated.",
+  // The webhooks mode reports its match conditions under its own key, and a
+  // failed one failed for the same reason as any other.
+  webhookMatchConditions: "This match condition could not be evaluated.",
 };
 
 // sectionLabel names a result section, for the row and for the copy button's
