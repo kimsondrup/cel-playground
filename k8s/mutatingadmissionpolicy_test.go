@@ -91,6 +91,10 @@ func TestMutationEval(t *testing.T) {
 		// wantWarning, when non-empty, must be a substring of the single
 		// reported warning. When empty, no warning may be reported at all.
 		wantWarning string
+		// wantNotSimulated lists substrings that must appear in the reported
+		// caveats. Naming a policy field here also asserts that the caveat
+		// survives whatever the matchConditions decided.
+		wantNotSimulated []string
 		// wantNoFinal asserts that no final object is reported at all, which is
 		// the case when nothing was applied.
 		wantNoFinal bool
@@ -436,6 +440,23 @@ func TestMutationEval(t *testing.T) {
 		mutations:   nil,
 		wantNoFinal: true,
 		wantDiff:    false,
+	}, {
+		// The caveats describe the policy document, not the run, so a policy
+		// switched off by its own matchConditions still reports them -- that is
+		// exactly when a reader needs to be told params is bound to nothing.
+		name:   "caveats are reported for a policy its own matchConditions switch off",
+		policy: "gated paramkind policy.yaml",
+		object: "object.yaml",
+		expectedMatchConditions: []*k8s.EvalResult{{
+			Name: strptr("never"),
+			// A bare literal evaluates nothing, so it costs nothing.
+			Result: false,
+			Cost:   uint64ptr(0),
+		}},
+		wantNotSimulated: []string{"paramKind:", "matchConstraints:", "failurePolicy:", "API defaults:"},
+		mutations:        nil,
+		wantNoFinal:      true,
+		wantDiff:         false,
 	}}
 
 	for _, tt := range tests {
@@ -520,6 +541,12 @@ func TestMutationEval(t *testing.T) {
 					len(response.Warnings), tt.wantWarning, response.Warnings)
 			case !strings.Contains(response.Warnings[0], tt.wantWarning):
 				t.Errorf("warning = %q, want it to contain %q", response.Warnings[0], tt.wantWarning)
+			}
+
+			for _, want := range tt.wantNotSimulated {
+				if !strings.Contains(response.NotSimulated, want) {
+					t.Errorf("notSimulated = %q, want it to mention %q", response.NotSimulated, want)
+				}
 			}
 
 			if tt.wantNoFinal && response.FinalObject != "" {

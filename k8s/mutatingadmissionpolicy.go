@@ -201,7 +201,19 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 	var finalObject, diff string
 	var mutationCost uint64
 	var warnings []string
-	var notSimulated string
+
+	// What the policy asks for that this mode does not simulate. It is a property
+	// of the policy document, so it is reported whatever the matchConditions do and
+	// whether or not any mutation runs -- a policy gated off by its own
+	// matchConditions is exactly when the reader needs to know that params are
+	// unbound here.
+	schemaBacked := false
+	if objectValue != nil {
+		if gvk := (&unstructured.Unstructured{Object: objectValue}).GroupVersionKind(); gvk.Kind != "" {
+			_, schemaBacked = typeConverterFor(gvk)
+		}
+	}
+	caveats := notSimulated(policy, schemaBacked)
 
 	// Reported whatever the matchConditions do, since a dropped field may be the
 	// reason they did what they did.
@@ -239,7 +251,7 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 			return "", err
 		default:
 			mutations, finalObject, diff = run.results, run.finalObject, run.diff
-			mutationCost, notSimulated = run.cost, run.notSimulated
+			mutationCost = run.cost
 			warnings = append(warnings, run.warnings...)
 		}
 	}
@@ -264,7 +276,7 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 		Mutations:          mutations,
 		Diff:               diff,
 		FinalObject:        finalObject,
-		NotSimulated:       notSimulated,
+		NotSimulated:       caveats,
 		FailurePolicy:      celInfo.failurePolicy,
 		ReinvocationPolicy: celInfo.reinvocationPolicy,
 		Cost:               &cost,
@@ -360,12 +372,11 @@ var unknownFieldPattern = regexp.MustCompile(`unknown field "([^"]+)"`)
 
 // mutationRun is the outcome of evaluating a policy's spec.mutations.
 type mutationRun struct {
-	results      []*EvalMutationResult
-	finalObject  string
-	diff         string
-	cost         uint64
-	warnings     []string
-	notSimulated string
+	results     []*EvalMutationResult
+	finalObject string
+	diff        string
+	cost        uint64
+	warnings    []string
 }
 
 // evalMutations compiles and applies spec.mutations in order, threading the
@@ -621,10 +632,9 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 	}
 
 	run := &mutationRun{
-		results:      results,
-		cost:         totalCost,
-		warnings:     warnings,
-		notSimulated: notSimulated(policy, schemaBacked),
+		results:  results,
+		cost:     totalCost,
+		warnings: warnings,
 	}
 	if !mutated {
 		// Nothing was applied, so there is no "final object" to show. Returning
