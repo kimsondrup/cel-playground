@@ -250,6 +250,28 @@ func TestValidationEval(t *testing.T) {
 			Cost:        uint64ptr(12),
 		},
 	}, {
+		// Every level of the Authorizer tab written as a key with no body under it:
+		// a path, a group, a resource, a decision, a service account, and the group
+		// authorizer.requestResource is built from. None of them has any checks, so
+		// each one answers no opinion.
+		name:       "authorizer entries with no checks answer no opinion",
+		policy:     "authorizer6 policy.yaml",
+		orig:       "",
+		updated:    "authorizer6 updated.yaml",
+		request:    "authorizer6 request.yaml",
+		authorizer: "authorizer6 authorizer.yaml",
+		expected: k8s.EvalResponse{
+			Validations: []*k8s.EvalResult{
+				{Result: false, Cost: uint64ptr(350003)},
+				{Result: false, Cost: uint64ptr(350004)},
+				{Result: false, Cost: uint64ptr(350004)},
+				{Result: false, Cost: uint64ptr(350004)},
+				{Result: false, Cost: uint64ptr(350005)},
+				{Result: false, Cost: uint64ptr(350002)},
+			},
+			Cost: uint64ptr(2100022),
+		},
+	}, {
 		name:       "test an expression using allowed authorizer checks",
 		policy:     "authorizer1 policy.yaml",
 		orig:       "",

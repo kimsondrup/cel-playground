@@ -1,0 +1,16 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: "authorizer-empty-entry.example.com"
+spec:
+  failurePolicy: Fail
+  validations:
+  - expression: 'authorizer.path("/healthz").check("get").allowed()'
+  - expression: 'authorizer.group("apps").resource("deployments").check("update").allowed()'
+  - expression: 'authorizer.group("apps").resource("statefulsets").check("update").allowed()'
+  - expression: 'authorizer.group("batch").resource("jobs").check("create").allowed()'
+  - expression: 'authorizer.serviceAccount("default", "builder").group("apps").resource("deployments").check("update").allowed()'
+  # The Request tab names a resource in the group written with nothing under it.
+  # Building authorizer.requestResource walks the tab from Go rather than through
+  # CEL, so a nil entry here reaches no recover at all.
+  - expression: 'authorizer.requestResource.check("create").allowed()'

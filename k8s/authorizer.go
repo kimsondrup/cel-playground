@@ -49,7 +49,7 @@ func (a *Authorizer) Receive(function string, overload string, args []ref.Val) r
 				if len(path) == 0 {
 					return types.NewErr("path must not be empty")
 				} else if a.Paths != nil {
-					if pathCheck, ok := a.Paths[path]; ok {
+					if pathCheck, ok := a.Paths[path]; ok && pathCheck != nil {
 						initReceiver(&pathCheck.receiverOnlyObjectVal, PathCheckType)
 						return pathCheck
 					}
@@ -61,7 +61,7 @@ func (a *Authorizer) Receive(function string, overload string, args []ref.Val) r
 		case "group":
 			if group, ok := getString(args[0].Value()); ok {
 				if a.Groups != nil {
-					if groupCheck, ok := a.Groups[group]; ok {
+					if groupCheck, ok := a.Groups[group]; ok && groupCheck != nil {
 						initReceiver(&groupCheck.receiverOnlyObjectVal, GroupCheckType)
 						return groupCheck
 					}
@@ -79,7 +79,7 @@ func (a *Authorizer) Receive(function string, overload string, args []ref.Val) r
 				if name, ok := getString(args[1].Value()); ok {
 					if a.ServiceAccounts != nil {
 						if namespacedServiceAccounts, ok := a.ServiceAccounts[namespace]; ok {
-							if authorizer, ok := namespacedServiceAccounts[name]; ok {
+							if authorizer, ok := namespacedServiceAccounts[name]; ok && authorizer != nil {
 								initReceiver(&authorizer.receiverOnlyObjectVal, AuthorizerType)
 								return authorizer
 							}
@@ -111,7 +111,7 @@ func (p *PathCheck) Receive(function string, overload string, args []ref.Val) re
 				return types.NewErr("must specify check")
 			}
 			if p.Checks != nil {
-				if decision, ok := p.Checks[check]; ok {
+				if decision, ok := p.Checks[check]; ok && decision != nil {
 					initReceiver(&decision.receiverOnlyObjectVal, DecisionType)
 					return decision
 				}
@@ -137,7 +137,7 @@ func (g *GroupCheck) Receive(function string, overload string, args []ref.Val) r
 	if function == "resource" && len(args) == 1 {
 		if resource, ok := getString(args[0].Value()); ok {
 			if len(resource) >= 0 && g.Resources != nil {
-				if resourceCheck, ok := g.Resources[resource]; ok {
+				if resourceCheck, ok := g.Resources[resource]; ok && resourceCheck != nil {
 					initReceiver(&resourceCheck.receiverOnlyObjectVal, ResourceCheckType)
 					return resourceCheck
 				}
@@ -172,7 +172,7 @@ func (r *ResourceCheck) Receive(function string, overload string, args []ref.Val
 				if len(subresource) == 0 {
 					return r
 				} else if r.Subresources != nil {
-					if resourceCheck, ok := r.Subresources[subresource]; ok {
+					if resourceCheck, ok := r.Subresources[subresource]; ok && resourceCheck != nil {
 						initResourceReceiver(resourceCheck, r.namespace, r.name, true)
 						return resourceCheck
 					}
@@ -219,7 +219,7 @@ func getDecision(checkVal any, checks map[string]map[string]map[string]*Decision
 			checkName := getValOrEmpty(name)
 			if namespacedChecks, ok := checks[checkNamespace]; ok {
 				if namedChecks, ok := namespacedChecks[checkName]; ok {
-					if decision, ok := namedChecks[check]; ok {
+					if decision, ok := namedChecks[check]; ok && decision != nil {
 						initReceiver(&decision.receiverOnlyObjectVal, DecisionType)
 						return decision
 					}

@@ -1,0 +1,18 @@
+# Every level of the tab written as a key with nothing under it, which is what a
+# tab halfway through being typed looks like. None of them has any checks, so each
+# one answers no opinion.
+paths:
+  /healthz:
+groups:
+  apps:
+    resources:
+      deployments:
+      statefulsets:
+        checks:
+          "":
+            "":
+              update:
+  batch:
+serviceAccounts:
+  default:
+    builder:

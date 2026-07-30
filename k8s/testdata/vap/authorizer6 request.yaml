@@ -1,0 +1,12 @@
+kind:
+  group: "batch"
+  version: "v1"
+  kind: "Job"
+resource:
+  group: "batch"
+  version: "v1"
+  resource: "jobs"
+subResource: ""
+operation: "CREATE"
+userInfo:
+  username: "testuser"
