@@ -1,0 +1,26 @@
+paths:
+groups:
+  apps:
+    resources:
+      deployments:
+        checks:
+          "":
+            "":
+              update:
+                decision: allow
+                reason: cluster-scope
+          default:
+            "":
+              update:
+                decision: allow
+                reason: namespace-scope
+            nginx:
+              update:
+                decision: allow
+                reason: object-scope
+          kube-system:
+            "":
+              update:
+                decision: allow
+                reason: kube-system-scope
+serviceAccounts:

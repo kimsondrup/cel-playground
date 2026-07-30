@@ -1,0 +1,15 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: "authorizer-chain-scoping.example.com"
+spec:
+  failurePolicy: Fail
+  validations:
+  # A second subresource() replaces the first, the way a cluster answers about
+  # whichever subresource the check ended up scoped to.
+  - expression: 'authorizer.group("apps").resource("deployments").subresource("status").subresource("scale").check("update").reason()'
+  # An empty argument clears an earlier one: off the subresource here, back to no
+  # name below, and to the cluster scope for a namespace.
+  - expression: 'authorizer.group("apps").resource("deployments").subresource("scale").subresource("").check("update").reason()'
+  - expression: 'authorizer.group("apps").resource("deployments").namespace("default").name("nginx").name("").check("update").reason()'
+  - expression: 'authorizer.group("apps").resource("deployments").namespace("default").namespace("").check("update").reason()'

@@ -1,0 +1,21 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: "authorizer-chain-isolation.example.com"
+spec:
+  failurePolicy: Fail
+  validations:
+  # Two identical chains in one policy must give the same answer: narrowing one
+  # must not leak into the next.
+  - expression: 'authorizer.group("apps").resource("deployments").namespace("default").name("nginx").check("update").reason()'
+  - expression: 'authorizer.group("apps").resource("deployments").namespace("default").name("nginx").check("update").reason()'
+  # Narrowed to neither a namespace nor a name: the cluster scope, unaffected by
+  # the chains above.
+  - expression: 'authorizer.group("apps").resource("deployments").check("update").reason()'
+  # authorizer.requestResource is one value bound once for the whole policy, so
+  # narrowing it must narrow a copy: the chain below scopes it to another namespace,
+  # and the expression after it has to see it scoped as the request scopes it.
+  - expression: 'authorizer.requestResource.namespace("kube-system").check("update").reason()'
+  - expression: 'authorizer.requestResource.check("update").reason()'
+  # An empty resource is an error on a cluster, not a denial.
+  - expression: 'authorizer.group("apps").resource("").check("update").allowed()'

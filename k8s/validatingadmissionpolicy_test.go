@@ -250,6 +250,55 @@ func TestValidationEval(t *testing.T) {
 			Cost:        uint64ptr(12),
 		},
 	}, {
+		// Narrowing a check must not leak into the next chain, and an empty
+		// resource must be an error rather than a silent denial.
+		name:       "authorizer chains do not leak into one another",
+		policy:     "authorizer4 policy.yaml",
+		orig:       "",
+		updated:    "authorizer4 updated.yaml",
+		request:    "authorizer4 request.yaml",
+		authorizer: "authorizer4 authorizer.yaml",
+		expected: k8s.EvalResponse{
+			Validations: []*k8s.EvalResult{
+				// The narrowed chains cost two more than the un-narrowed one:
+				// namespace() and name() are a call each.
+				{Result: "object-scope", Cost: uint64ptr(350006)},
+				{Result: "object-scope", Cost: uint64ptr(350006)},
+				{Result: "cluster-scope", Cost: uint64ptr(350004)},
+				// Reading authorizer.requestResource is 1 and the check 350000, so
+				// the bare chain is 350002 and the narrowed one 350003.
+				{Result: "kube-system-scope", Cost: uint64ptr(350003)},
+				{Result: "namespace-scope", Cost: uint64ptr(350002)},
+				{
+					IsError: true,
+					Error: strptr("unexpected error evaluating expression " +
+						`authorizer.group("apps").resource("").check("update").allowed(): ` +
+						"resource must not be empty"),
+				},
+			},
+			// The erroring validation reports no cost, so it adds nothing.
+			Cost: uint64ptr(1750021),
+		},
+	}, {
+		// Each scoping call replaces what an earlier one in the same chain set. An
+		// empty argument clears it, and an empty namespace is the cluster scope.
+		name:       "authorizer chains scope by their last call",
+		policy:     "authorizer5 policy.yaml",
+		orig:       "",
+		updated:    "authorizer5 updated.yaml",
+		authorizer: "authorizer5 authorizer.yaml",
+		expected: k8s.EvalResponse{
+			// Every chain costs 350004 for reading authorizer, group(), resource(),
+			// check() and the accessor, plus one per scoping call.
+			Validations: []*k8s.EvalResult{
+				{Result: "scale-subresource", Cost: uint64ptr(350006)},
+				{Result: "cluster-scope", Cost: uint64ptr(350006)},
+				{Result: "namespace-scope", Cost: uint64ptr(350007)},
+				{Result: "cluster-scope", Cost: uint64ptr(350006)},
+			},
+			Cost: uint64ptr(1400025),
+		},
+	}, {
 		// Every level of the Authorizer tab written as a key with no body under it:
 		// a path, a group, a resource, a decision, a service account, and the group
 		// authorizer.requestResource is built from. None of them has any checks, so
@@ -490,5 +539,63 @@ spec:
 				t.Errorf("%s expression = %v, want true", tc.lib, v.Result)
 			}
 		})
+	}
+}
+
+// The wasm entry point hands every editor tab to the evaluator as a string, so an
+// untouched tab arrives as an empty byte slice rather than as nil. The table above
+// passes nil for an absent fixture, which is a shape the browser never produces --
+// so the empty-slice shape needs its own case.
+func TestEmptyTabsAsTheWasmEntryPointPassesThem(t *testing.T) {
+	policy := []byte(`apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: empty-tabs
+spec:
+  validations:
+  - expression: "object.spec.replicas <= 3"
+`)
+	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\nspec:\n  replicas: 1\n")
+	empty := []byte("")
+
+	out, err := k8s.EvalValidatingAdmissionPolicy(policy, empty, object, empty, empty, empty)
+	if err != nil {
+		t.Fatalf("EvalValidatingAdmissionPolicy() with empty tabs: %v", err)
+	}
+	var response k8s.EvalResponse
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(response.Validations) != 1 || response.Validations[0].Result != true {
+		t.Errorf("validations = %+v, want one true result", response.Validations)
+	}
+
+	// An empty Request tab names no resource for authorizer.requestResource to be a
+	// check on. It is still bound, and answers no opinion, because a policy that
+	// reads it should report that rather than fail to evaluate.
+	authorizerPolicy := []byte(`apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: empty-tabs-authorizer
+spec:
+  validations:
+  - expression: "authorizer.requestResource.check('update').allowed()"
+`)
+	out, err = k8s.EvalValidatingAdmissionPolicy(authorizerPolicy, empty, object, empty, empty, empty)
+	if err != nil {
+		t.Fatalf("EvalValidatingAdmissionPolicy() reading requestResource with empty tabs: %v", err)
+	}
+	response = k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(response.Validations) != 1 {
+		t.Fatalf("validations = %+v, want exactly one", response.Validations)
+	}
+	if response.Validations[0].Result != false {
+		t.Errorf("validations = %+v, want one false result", response.Validations)
+	}
+	if response.Validations[0].IsError {
+		t.Errorf("validation errored: %v", *response.Validations[0].Error)
 	}
 }

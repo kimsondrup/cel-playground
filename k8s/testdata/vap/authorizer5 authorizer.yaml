@@ -1,0 +1,36 @@
+paths:
+groups:
+  apps:
+    resources:
+      deployments:
+        subresources:
+          scale:
+            checks:
+              "":
+                "":
+                  update:
+                    decision: allow
+                    reason: scale-subresource
+          status:
+            checks:
+              "":
+                "":
+                  update:
+                    decision: allow
+                    reason: status-subresource
+        checks:
+          "":
+            "":
+              update:
+                decision: allow
+                reason: cluster-scope
+          default:
+            "":
+              update:
+                decision: allow
+                reason: namespace-scope
+            nginx:
+              update:
+                decision: allow
+                reason: object-scope
+serviceAccounts:
