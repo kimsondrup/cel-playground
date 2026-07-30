@@ -41,6 +41,10 @@ func TestGuessResource(t *testing.T) {
 		{"NetworkPolicy", "networkpolicies"},
 		{"Ingress", "ingresses"},
 		{"Endpoints", "endpoints"},
+		// A trailing "s" does not make a kind plural: these are singular and
+		// their resources take -es. Endpoints above is the exception.
+		{"ComponentStatus", "componentstatuses"},
+		{"Status", "statuses"},
 		{"Gateway", "gateways"},
 		{"StorageClass", "storageclasses"},
 		{"PriorityClass", "priorityclasses"},

@@ -835,14 +835,16 @@ func guessResource(kind string) string {
 	switch {
 	case lower == "":
 		return ""
+	case lower == "endpoints":
+		// The one built-in kind whose name is already plural. Kubernetes keeps
+		// the same exception, as a list of whole names rather than a rule --
+		// a kind ending in "s" is otherwise far more likely to be a singular
+		// like ComponentStatus than a plural like this one.
+		return lower
 	case strings.HasSuffix(lower, "s"), strings.HasSuffix(lower, "x"),
 		strings.HasSuffix(lower, "z"), strings.HasSuffix(lower, "ch"),
 		strings.HasSuffix(lower, "sh"):
-		if strings.HasSuffix(lower, "ss") || !strings.HasSuffix(lower, "s") {
-			return lower + "es"
-		}
-		// Already plural, e.g. Endpoints.
-		return lower
+		return lower + "es"
 	case strings.HasSuffix(lower, "y") && len(lower) > 1 && !isVowel(lower[len(lower)-2]):
 		return lower[:len(lower)-1] + "ies"
 	default:
