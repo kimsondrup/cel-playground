@@ -272,9 +272,12 @@ func TestAuthorizerChainsAskWhatKubernetesAsks(t *testing.T) {
 		`authorizer.group("apps").resource("deployments").name("nginx").name("").check("update").allowed()`,
 		`authorizer.group("apps").resource("deployments").subresource("status").subresource("scale").check("update").allowed()`,
 		`authorizer.group("apps").resource("deployments").subresource("scale").subresource("").check("update").allowed()`,
-		// A non-resource path, and a check made as a service account.
+		// A non-resource path, and a check made as a service account. Asking as one
+		// replaces who is asking, so a second serviceAccount() is the account the
+		// check is about -- it does not look for that account inside the first.
 		`authorizer.path("/healthz").check("get").allowed()`,
 		`authorizer.serviceAccount("default", "builder").group("apps").resource("deployments").namespace("default").check("update").allowed()`,
+		`authorizer.serviceAccount("kube-system", "other").serviceAccount("default", "builder").group("apps").resource("deployments").namespace("default").check("update").allowed()`,
 	}
 
 	for _, expression := range expressions {
@@ -385,8 +388,8 @@ func TestAuthorizerRejectsWhatKubernetesRejects(t *testing.T) {
 	expressions := []string{
 		`authorizer.group("apps").resource("").check("update").allowed()`,
 		`authorizer.path("").check("get").allowed()`,
-		// A whitespace-only argument is the one place the trimming above agrees with
-		// Kubernetes, which trims these two to test them for emptiness.
+		// A whitespace-only argument is the one place the trimming above agrees
+		// with Kubernetes, which trims these two to test them for emptiness.
 		`authorizer.group("apps").resource("  ").check("update").allowed()`,
 		`authorizer.path("  ").check("get").allowed()`,
 	}

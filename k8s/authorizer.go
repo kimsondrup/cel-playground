@@ -77,17 +77,7 @@ func (a *Authorizer) Receive(function string, overload string, args []ref.Val) r
 			// TODO check the namespace and name to see if they are valid
 			if namespace, ok := getString(args[0].Value()); ok {
 				if name, ok := getString(args[1].Value()); ok {
-					if a.ServiceAccounts != nil {
-						if namespacedServiceAccounts, ok := a.ServiceAccounts[namespace]; ok {
-							if authorizer, ok := namespacedServiceAccounts[name]; ok && authorizer != nil {
-								initReceiver(&authorizer.receiverOnlyObjectVal, AuthorizerType)
-								return authorizer
-							}
-						}
-					}
-					authorizer := &Authorizer{}
-					initReceiver(&authorizer.receiverOnlyObjectVal, AuthorizerType)
-					return authorizer
+					return serviceAccountCheck(a.ServiceAccounts[namespace][name], a.ServiceAccounts)
 				}
 			}
 		}
@@ -185,6 +175,24 @@ func (r *ResourceCheck) Receive(function string, overload string, args []ref.Val
 		}
 	}
 	return types.NoSuchOverloadErr()
+}
+
+// serviceAccountCheck returns what the tab says about one service account: the
+// paths and groups written under it, and the service accounts of the tab it was
+// reached from. Carrying those along is what makes a second serviceAccount() ask
+// about that account instead of looking for it inside the first one, the way
+// asking as a service account replaces who is asking rather than narrowing it.
+//
+// An account the tab does not mention has no paths and no groups, so every lookup
+// on it answers no opinion.
+func serviceAccountCheck(entry *Authorizer, serviceAccounts map[string]map[string]*Authorizer) *Authorizer {
+	scoped := &Authorizer{ServiceAccounts: serviceAccounts}
+	if entry != nil {
+		scoped.Paths = entry.Paths
+		scoped.Groups = entry.Groups
+	}
+	initReceiver(&scoped.receiverOnlyObjectVal, AuthorizerType)
+	return scoped
 }
 
 // narrowedCheck returns a copy of an entry from the fixture, scoped to a
