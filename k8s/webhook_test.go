@@ -82,6 +82,8 @@ func TestWebhookEval(t *testing.T) {
 			Cost: uint64ptr(10),
 		},
 	}, {
+		// The tab allows this user to breakglass on the webhook, and the condition
+		// skips whoever may: it reports false, so the webhook is not called.
 		name:       "test a single webhook, match conditions will rely on authorizer information",
 		webhook:    "webhook4.yaml",
 		updated:    "updated4.yaml",
@@ -89,7 +91,7 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "authorizer4.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{{
-				{Name: strptr("breakglass"), Result: true, Cost: uint64ptr(350006)},
+				{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(350006)},
 			}},
 			Cost: uint64ptr(350006),
 		},

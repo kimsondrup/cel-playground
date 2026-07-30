@@ -2,11 +2,11 @@ paths:
 groups:
   admissionregistration.k8s.io:
     resources:
-validatingwebhookconfigurations:
-  checks:
-    "":
-      rbac.my-webhook.example.com:
-        breakglass:
-          decision: allow
+      validatingwebhookconfigurations:
+        checks:
+          # A cluster-scoped resource has no namespace, so the key is "".
+          "":
+            rbac.my-webhook.example.com:
+              breakglass:
+                decision: allow
 serviceAccounts:
-
