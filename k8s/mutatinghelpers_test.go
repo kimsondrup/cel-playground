@@ -71,17 +71,17 @@ func TestUnifiedDiff(t *testing.T) {
 		name: "addition to an empty document",
 		from: "",
 		to:   "a\n",
-		want: "--- object\n+++ mutated\n@@ -0,0 +1,1 @@\n+a\n",
+		want: "--- object\n+++ mutated\n@@ -0,0 +1 @@\n+a\n",
 	}, {
 		name: "removal down to an empty document",
 		from: "a\n",
 		to:   "",
-		want: "--- object\n+++ mutated\n@@ -1,1 +0,0 @@\n-a\n",
+		want: "--- object\n+++ mutated\n@@ -1 +0,0 @@\n-a\n",
 	}, {
 		name: "single line replaced",
 		from: "a\n",
 		to:   "b\n",
-		want: "--- object\n+++ mutated\n@@ -1,1 +1,1 @@\n-a\n+b\n",
+		want: "--- object\n+++ mutated\n@@ -1 +1 @@\n-a\n+b\n",
 	}, {
 		name: "insertion keeps surrounding context",
 		from: "a\nb\nc\n",
@@ -100,6 +100,15 @@ func TestUnifiedDiff(t *testing.T) {
 
 // TestUnifiedDiffHunkCountsMatchBody guards the @@ headers against drifting out
 // of sync with the lines that follow them.
+// splitLines splits a rendered diff into lines, dropping the trailing newline
+// so a diff that ends in one does not yield a final empty line.
+func splitLines(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+}
+
 func TestUnifiedDiffHunkCountsMatchBody(t *testing.T) {
 	from := "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\n"
 	to := "l1\nCHANGED\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nCHANGED15\n"
@@ -383,12 +392,55 @@ func TestMutationAuthorizerWithoutConfig(t *testing.T) {
 	}
 }
 
-// TestUnifiedDiffLargeDocument pins the prefix/suffix trimming in diffOps. A
-// one-line change in a large object must stay cheap: without trimming, the LCS
-// table alone is len(from)*len(to) ints, which is ~200 MB of browser memory at
-// 5000 lines for the ten-line diff asserted here. The allocation ceiling is
-// deliberately generous -- it is there to catch the table coming back, not to
-// pin an exact figure.
+// TestUnifiedDiffFarApartEdits guards the case a full LCS table cannot serve:
+// two edits at opposite ends of a large object, where trimming the common
+// prefix and suffix leaves nearly the whole document to compare and the table
+// goes quadratic in the span between them. That is what takes a browser tab
+// down. Myers stays close to the size of the edit, so the diff here is the
+// minimal one and cheap to produce.
+func TestUnifiedDiffFarApartEdits(t *testing.T) {
+	const lines = 20000
+	document := make([]string, lines)
+	for i := range document {
+		document[i] = fmt.Sprintf("  - name: container-%d", i)
+	}
+	from := strings.Join(document, "\n") + "\n"
+	edited := append([]string{}, document...)
+	edited[1] = "  - name: EDITED-NEAR-THE-TOP"
+	edited[lines-2] = "  - name: EDITED-NEAR-THE-BOTTOM"
+	to := strings.Join(edited, "\n") + "\n"
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got := unifiedDiff(from, to, "object", "mutated")
+	runtime.ReadMemStats(&after)
+
+	allocated := after.TotalAlloc - before.TotalAlloc
+	const maxAlloc = 32 << 20
+	if allocated > maxAlloc {
+		t.Errorf("unifiedDiff allocated %d bytes for two one-line edits, want at most %d", allocated, maxAlloc)
+	}
+
+	for _, want := range []string{"+  - name: EDITED-NEAR-THE-TOP", "+  - name: EDITED-NEAR-THE-BOTTOM"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diff does not contain %q", want)
+		}
+	}
+
+	// Two hunks of seven lines -- a hunk header, the removed and added line,
+	// three lines of context on the inward side and the one line that exists
+	// on the outward side -- plus the two file headers. Anything much larger
+	// means the whole document is being reported rather than what changed.
+	if want := 16; strings.Count(got, "\n") != want {
+		t.Errorf("diff has %d lines, want %d:\n%s", strings.Count(got, "\n"), want, got)
+	}
+}
+
+// TestUnifiedDiffLargeDocument keeps a one-line change in a large object cheap.
+// A quadratic diff would need ~200 MB of browser memory at 5000 lines to report
+// the ten lines asserted here. The allocation ceiling is deliberately generous
+// -- it is there to catch a quadratic implementation, not to pin a figure.
 func TestUnifiedDiffLargeDocument(t *testing.T) {
 	const lines = 5000
 	document := make([]string, lines)
@@ -410,7 +462,7 @@ func TestUnifiedDiffLargeDocument(t *testing.T) {
 	allocated := after.TotalAlloc - before.TotalAlloc
 	const maxAlloc = 16 << 20
 	if allocated > maxAlloc {
-		t.Errorf("unifiedDiff allocated %d bytes, want at most %d -- has the LCS table stopped being trimmed?", allocated, maxAlloc)
+		t.Errorf("unifiedDiff allocated %d bytes for a one-line insertion, want at most %d", allocated, maxAlloc)
 	}
 
 	// One insertion, three lines of context either side, plus the two file
