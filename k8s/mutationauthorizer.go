@@ -32,18 +32,16 @@ import (
 // editor tab, and this adapter exists to give the same answers from the same
 // fixture.
 //
-// The two are not interchangeable yet: the receiver types assign onto the
-// *ResourceCheck stored in the fixture map, so state leaks between chains within
-// one evaluation and an un-narrowed check() can read the request's own namespace
-// and name. That is a pre-existing defect in the receiver path, not one this
-// adapter introduces, and it applies inside this mode too -- matchConditions and
-// spec.variables go through the receiver types, only spec.mutations come here.
+// The lookup itself is shared: decisionFor, pathDecisionFor and narrowedCheck are
+// the same functions the receiver types call, so the two paths cannot drift on
+// what an entry means. What this adapter adds is the translation onto that
+// lookup from authorizer.Attributes -- upstream's serviceAccount, selector and
+// subresource conventions. matchConditions and spec.variables go through the
+// receiver types; only spec.mutations come here.
 //
-// Lookup mirrors the receiver types: resource checks are indexed as
-// checks[namespace][name][verb] with subresources nested under the resource, and
-// path checks as checks[verb]. Keys are trimmed the way k8s/authorizer.go's
-// getString trims them. An entry that is absent yields DecisionNoOpinion, which
-// is what `allowed()` reports as false.
+// Keys are matched exactly as written, as k8s/authorizer.go's getString reads
+// them. An entry that is absent yields DecisionNoOpinion, which is what
+// `allowed()` reports as false.
 type mutationAuthorizer struct {
 	config *Authorizer
 
