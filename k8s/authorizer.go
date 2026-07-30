@@ -327,6 +327,10 @@ func getValOrEmpty(val any) string {
 // That is a different question, not a broader one -- the fixture matches its keys
 // exactly and has no wildcard, so a "" name key answers only a check that names
 // nothing.
+//
+// This construction is the one piece of the authorizer the oracle test does not
+// reach: that test compares the chains a policy writes, not the value bound here,
+// which the vap cases assert instead.
 func getAuthorizerRequestResource(authorizer *Authorizer, request map[string]any) (*ResourceCheck, error) {
 	if authorizer == nil || request == nil {
 		return nil, nil
