@@ -443,8 +443,12 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 		requestUser(request),
 	)
 	versionedAttributes := &admission.VersionedAttributes{
-		Attributes:         attributes,
-		VersionedKind:      gvk,
+		Attributes: attributes,
+		// The patchers rebuild an AdmissionRequest from this, so it is what
+		// request.kind reads inside a mutation expression. It has to be the kind the
+		// Request tab names, or one expression answers the tab in a matchCondition
+		// and the object's own kind in a mutation.
+		VersionedKind:      requestGVK,
 		VersionedObject:    object,
 		VersionedOldObject: oldObjectArg,
 	}

@@ -14,7 +14,8 @@ spec:
             annotations: {
               "playground/req-name": request.name,
               "playground/req-namespace": request.namespace,
-              "playground/req-resource": request.resource.resource
+              "playground/req-resource": request.resource.resource,
+              "playground/req-kind": request.kind.kind
             }
           }
         }

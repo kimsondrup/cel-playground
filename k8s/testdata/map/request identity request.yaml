@@ -1,7 +1,7 @@
 kind:
   group: "apps"
   version: "v1"
-  kind: "Deployment"
+  kind: "Scale"
 resource:
 subResource: ""
 name: "name-from-request-tab"

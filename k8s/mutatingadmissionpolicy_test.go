@@ -396,6 +396,9 @@ func TestMutationEval(t *testing.T) {
 				"playground/req-name: name-from-request-tab",
 				"playground/req-namespace: namespace-from-request-tab",
 				"playground/req-resource: deployments",
+				// The Object tab holds a Deployment; only the Request tab says
+				// Scale, so this is the half that a wrong VersionedKind breaks.
+				"playground/req-kind: Scale",
 			},
 		}},
 		failurePolicy:      "Ignore",
