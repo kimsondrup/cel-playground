@@ -824,3 +824,65 @@ spec:
 		t.Fatalf("expected the mutation to run, got %+v", response.Mutations)
 	}
 }
+
+// TestCostIncludesAVariableAMatchConditionRead pins that the total covers a
+// variable this environment evaluated on its own. A mutation is charged for
+// its own evaluation of the variables it reads, so those are not counted
+// twice, but nothing else accounts for one a matchCondition pulled in.
+//
+// Kubernetes does not allow spec.variables in matchConditions at all -- they
+// are evaluated before the rest of the policy -- so a cluster would reject this
+// document. The playground evaluates it anyway, and the panel displays the
+// variable with a cost, so the total has to include it.
+func TestCostIncludesAVariableAMatchConditionRead(t *testing.T) {
+	policy := []byte(`apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: matchcondition-variable
+spec:
+  variables:
+  - name: appName
+    expression: "object.metadata.name"
+  matchConditions:
+  - name: named-nginx
+    expression: "variables.appName == 'nginx'"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{metadata: Object.metadata{labels: {"ran": "yes"}}}
+`)
+	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\nspec:\n  replicas: 1\n")
+
+	out, err := k8s.EvalMutatingAdmissionPolicy(policy, nil, object, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error = %v", err)
+	}
+	var response k8s.EvalResponse
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(response.MutationVariables) != 1 || response.MutationVariables[0].Cost == nil {
+		t.Fatalf("expected one variable with a cost, got %+v", response.MutationVariables)
+	}
+	var want uint64
+	for _, result := range response.MatchConditions {
+		if result.Cost != nil {
+			want += *result.Cost
+		}
+	}
+	want += *response.MutationVariables[0].Cost
+	for _, mutation := range response.Mutations {
+		if mutation.Cost != nil {
+			want += *mutation.Cost
+		}
+	}
+	if response.Cost == nil {
+		t.Fatal("total cost is absent")
+	}
+	if *response.Cost != want {
+		t.Errorf("total cost = %d, want %d -- the sum of every cost the panel shows",
+			*response.Cost, want)
+	}
+}

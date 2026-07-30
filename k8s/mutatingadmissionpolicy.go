@@ -197,6 +197,11 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 		matchConditionsEvals = append(matchConditionsEvals, val)
 	}
 
+	// Whatever the matchConditions read was evaluated by this environment and
+	// nothing else accounts for it. Taken before the mutations force anything
+	// else, because those are charged separately below.
+	matchConditionVariableCost := calculateLazyEvalCost(variableLazyEvals)
+
 	var mutations []*EvalMutationResult
 	var finalObject, diff string
 	var mutationCost uint64
@@ -261,14 +266,16 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 	}
 
 	// A mutation that evaluated has already been charged for the composited
-	// re-evaluation of spec.variables, so the display-side evaluation above is
-	// not added on top of it; it exists only to surface the values. Where no
-	// mutation got that far -- a compile error, a missing object -- that
-	// display-side evaluation is the only thing that ran, and charging nothing
-	// for it would report a cost of zero for work the panel shows.
+	// re-evaluation of the variables it reads, so the display-side evaluation of
+	// those is not added on top of it; it exists only to surface the values.
+	// What a matchCondition read is not in that figure, so it is added
+	// separately. Where no mutation got that far -- a compile error, a missing
+	// object -- the display-side evaluation is the only thing that ran, and
+	// charging nothing for it would report a cost of zero for work the panel
+	// shows.
 	cost := calculateEvalResponsesCost(matchConditionsEvals)
 	if mutationCost > 0 {
-		cost += mutationCost
+		cost += mutationCost + matchConditionVariableCost
 	} else {
 		cost += calculateLazyEvalCost(variableLazyEvals)
 	}
