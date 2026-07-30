@@ -258,10 +258,12 @@ func TestMutationAuthorizer(t *testing.T) {
 		wantAllowed: authorizer.DecisionAllow,
 		wantReason:  "root-allow",
 	}, {
-		name:        "keys are matched after trimming whitespace",
+		// The tab matches its keys as they were written, the way the receivers in
+		// k8s/authorizer.go do, so a padded attribute is a different key.
+		name:        "keys are matched as they were written",
 		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: " apps ", Resource: " deployments ", Verb: " update "},
-		wantAllowed: authorizer.DecisionAllow,
-		wantReason:  "root-allow",
+		wantAllowed: authorizer.DecisionNoOpinion,
+		wantReason:  "",
 	}}
 
 	adapter := &mutationAuthorizer{config: config}

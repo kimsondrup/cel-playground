@@ -17,7 +17,6 @@ package k8s
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
@@ -150,13 +149,13 @@ func (m *mutationAuthorizer) configFor(attr authorizer.Attributes) *Authorizer {
 	if err != nil {
 		return m.config
 	}
-	namespacedServiceAccounts, ok := m.config.ServiceAccounts[strings.TrimSpace(namespace)]
+	namespacedServiceAccounts, ok := m.config.ServiceAccounts[namespace]
 	if !ok {
 		// An unknown service account gets an empty authorizer rather than the
 		// requesting user's, mirroring Authorizer.Receive.
 		return &Authorizer{}
 	}
-	serviceAccount, ok := namespacedServiceAccounts[strings.TrimSpace(name)]
+	serviceAccount, ok := namespacedServiceAccounts[name]
 	if !ok || serviceAccount == nil {
 		return &Authorizer{}
 	}
@@ -165,34 +164,18 @@ func (m *mutationAuthorizer) configFor(attr authorizer.Attributes) *Authorizer {
 
 func lookupDecision(config *Authorizer, attr authorizer.Attributes) *Decision {
 	if !attr.IsResourceRequest() {
-		pathCheck, ok := config.Paths[strings.TrimSpace(attr.GetPath())]
+		pathCheck, ok := config.Paths[attr.GetPath()]
 		if !ok || pathCheck == nil {
 			return nil
 		}
-		return pathCheck.Checks[strings.TrimSpace(attr.GetVerb())]
+		return pathDecisionFor(pathCheck, attr.GetVerb())
 	}
 
-	groupCheck, ok := config.Groups[strings.TrimSpace(attr.GetAPIGroup())]
+	groupCheck, ok := config.Groups[attr.GetAPIGroup()]
 	if !ok || groupCheck == nil {
 		return nil
 	}
-	resourceCheck, ok := groupCheck.Resources[strings.TrimSpace(attr.GetResource())]
-	if !ok || resourceCheck == nil {
-		return nil
-	}
-	if subresource := strings.TrimSpace(attr.GetSubresource()); subresource != "" {
-		resourceCheck, ok = resourceCheck.Subresources[subresource]
-		if !ok || resourceCheck == nil {
-			return nil
-		}
-	}
-	namespacedChecks, ok := resourceCheck.Checks[strings.TrimSpace(attr.GetNamespace())]
-	if !ok {
-		return nil
-	}
-	namedChecks, ok := namespacedChecks[strings.TrimSpace(attr.GetName())]
-	if !ok {
-		return nil
-	}
-	return namedChecks[strings.TrimSpace(attr.GetVerb())]
+	check := narrowedCheck(groupCheck.Resources[attr.GetResource()],
+		attr.GetSubresource(), attr.GetNamespace(), attr.GetName())
+	return decisionFor(check, attr.GetVerb())
 }
