@@ -51,8 +51,6 @@ func readMutationTestData(policy, oldObject, object, namespace, request, authori
 }
 
 // mutationExpectation describes the per-mutation assertions for a test case.
-// Cost is asserted only when non-nil, so a case can pin the exact CEL cost
-// where it is meaningful and ignore it elsewhere.
 type mutationExpectation struct {
 	patchType string
 	isError   bool
