@@ -22,7 +22,6 @@ import (
 	"k8s.io/api/admissionregistration/v1alpha1"
 	"k8s.io/api/admissionregistration/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/scheme"
 )
 
 type CelVariableInfo struct {
@@ -57,9 +56,7 @@ type CelInformation struct {
 }
 
 func deserializeCelInformation(data []byte) (runtime.Object, error) {
-	decoder := scheme.Codecs.UniversalDeserializer()
-
-	runtimeObject, _, err := decoder.Decode(data, nil, nil)
+	runtimeObject, _, err := policyDeserializer.Decode(data, nil, nil)
 	if err != nil {
 		return nil, err
 	}
