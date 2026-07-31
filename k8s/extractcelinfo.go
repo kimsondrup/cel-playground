@@ -16,12 +16,11 @@ package k8s
 
 import (
 	"fmt"
-	"reflect"
+	"sort"
+	"strings"
 
-	v1 "k8s.io/api/admissionregistration/v1"
-	"k8s.io/api/admissionregistration/v1alpha1"
-	"k8s.io/api/admissionregistration/v1beta1"
-	"k8s.io/apimachinery/pkg/runtime"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type CelVariableInfo struct {
@@ -46,8 +45,6 @@ type CelMatchConditionsInfo struct {
 }
 
 type CelInformation struct {
-	name                   string
-	namespace              string
 	variables              []CelVariableInfo
 	validations            []CelValidationInfo
 	auditAnnotations       []CelAuditAnnotationsInfo
@@ -55,46 +52,119 @@ type CelInformation struct {
 	webhookMatchConditions [][]CelMatchConditionsInfo
 }
 
-func deserializeCelInformation(data []byte) (runtime.Object, error) {
-	runtimeObject, _, err := policyDeserializer.Decode(data, nil, nil)
-	if err != nil {
-		return nil, err
-	}
+const admissionregistrationGroup = "admissionregistration.k8s.io"
 
-	return runtimeObject, nil
+// acceptedVersions lists, per kind, the admissionregistration.k8s.io versions
+// the playground reads.
+//
+// Every version of a kind declares the same CEL-carrying fields: upstream's
+// generated conversions between them are pure pointer reinterpretations with no
+// manual conversion anywhere in the group, and several of the shared types
+// (Rule, RuleWithOperations, ScopeType, OperationType) are literal Go aliases to
+// the v1 ones. So all versions decode into the v1 type and the evaluator only
+// ever sees one shape. TestAcceptedVersionsAreShapedLikeV1 holds that to
+// account against the real per-version types on every dependency bump.
+var acceptedVersions = map[string][]string{
+	"ValidatingAdmissionPolicy":      {"v1", "v1beta1", "v1alpha1"},
+	"ValidatingWebhookConfiguration": {"v1", "v1beta1"},
+	"MutatingWebhookConfiguration":   {"v1", "v1beta1"},
 }
 
 func extractCelInformation(input []byte) (*CelInformation, error) {
-	if deser, err := deserializeCelInformation(input); err != nil {
+	typeMeta := metav1.TypeMeta{}
+	if err := decodeTyped(input, &typeMeta, false); err != nil {
 		return nil, fmt.Errorf("failed to decode input: %w", err)
-	} else {
-		switch resource := deser.(type) {
-		case *v1alpha1.ValidatingAdmissionPolicy:
-			return extractVAPV1Alpha1CelInformation(resource), nil
-		case *v1beta1.ValidatingAdmissionPolicy:
-			return extractVAPV1Beta1CelInformation(resource), nil
-		case *v1.ValidatingAdmissionPolicy:
-			return extractVAPV1CelInformation(resource), nil
-		case *v1beta1.ValidatingWebhookConfiguration:
-			return extractVWV1Beta1CelInformation(resource), nil
-		case *v1.ValidatingWebhookConfiguration:
-			return extractVWV1CelInformation(resource), nil
-		case *v1beta1.MutatingWebhookConfiguration:
-			return extractMWV1Beta1CelInformation(resource), nil
-		case *v1.MutatingWebhookConfiguration:
-			return extractMWV1CelInformation(resource), nil
-		default:
-			deserType := reflect.TypeOf(deser)
-			return nil, fmt.Errorf("unexpected input type %s", deserType.Kind())
+	}
+	if err := checkAccepted(typeMeta); err != nil {
+		return nil, err
+	}
+
+	switch typeMeta.Kind {
+	case "ValidatingAdmissionPolicy":
+		policy := &admissionregistrationv1.ValidatingAdmissionPolicy{}
+		if err := decodeTyped(input, policy, false); err != nil {
+			return nil, fmt.Errorf("failed to decode input: %w", err)
 		}
+		return extractPolicyCelInformation(policy), nil
+	case "ValidatingWebhookConfiguration":
+		configuration := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+		if err := decodeTyped(input, configuration, false); err != nil {
+			return nil, fmt.Errorf("failed to decode input: %w", err)
+		}
+		matchConditions := make([][]admissionregistrationv1.MatchCondition, 0, len(configuration.Webhooks))
+		for _, webhook := range configuration.Webhooks {
+			matchConditions = append(matchConditions, webhook.MatchConditions)
+		}
+		return webhookCelInformation(matchConditions), nil
+	case "MutatingWebhookConfiguration":
+		configuration := &admissionregistrationv1.MutatingWebhookConfiguration{}
+		if err := decodeTyped(input, configuration, false); err != nil {
+			return nil, fmt.Errorf("failed to decode input: %w", err)
+		}
+		matchConditions := make([][]admissionregistrationv1.MatchCondition, 0, len(configuration.Webhooks))
+		for _, webhook := range configuration.Webhooks {
+			matchConditions = append(matchConditions, webhook.MatchConditions)
+		}
+		return webhookCelInformation(matchConditions), nil
+	default:
+		return nil, unknownKindError(typeMeta.Kind)
 	}
 }
 
-func extractVAPV1Alpha1CelInformation(policy *v1alpha1.ValidatingAdmissionPolicy) *CelInformation {
-	namespace := policy.ObjectMeta.GetNamespace()
-	name := policy.ObjectMeta.GetName()
+func webhookCelInformation(webhooks [][]admissionregistrationv1.MatchCondition) *CelInformation {
+	extracted := make([][]CelMatchConditionsInfo, 0, len(webhooks))
+	for _, matchConditions := range webhooks {
+		extracted = append(extracted, extractMatchConditions(matchConditions))
+	}
+	return &CelInformation{webhookMatchConditions: extracted}
+}
 
-	variables := []CelVariableInfo{}
+// checkAccepted rejects anything the playground cannot evaluate, naming what it
+// can, because "apiVersion: admissionregistration.k8s.io/v2" and a misspelled
+// kind are the two mistakes that reach this function.
+func checkAccepted(typeMeta metav1.TypeMeta) error {
+	if typeMeta.Kind == "" {
+		return fmt.Errorf("no kind is set; expected one of %s", strings.Join(acceptedKinds(), ", "))
+	}
+	versions, ok := acceptedVersions[typeMeta.Kind]
+	if !ok {
+		return unknownKindError(typeMeta.Kind)
+	}
+	group, version, _ := strings.Cut(typeMeta.APIVersion, "/")
+	if group != admissionregistrationGroup {
+		return fmt.Errorf("cannot evaluate apiVersion %q for kind %q; expected group %s", typeMeta.APIVersion, typeMeta.Kind, admissionregistrationGroup)
+	}
+	for _, accepted := range versions {
+		if version == accepted {
+			return nil
+		}
+	}
+	return fmt.Errorf("cannot evaluate apiVersion %q for kind %q; expected one of %s", typeMeta.APIVersion, typeMeta.Kind, strings.Join(prefixed(admissionregistrationGroup+"/", versions), ", "))
+}
+
+func unknownKindError(kind string) error {
+	return fmt.Errorf("cannot evaluate kind %q; expected one of %s", kind, strings.Join(acceptedKinds(), ", "))
+}
+
+func acceptedKinds() []string {
+	kinds := make([]string, 0, len(acceptedVersions))
+	for kind := range acceptedVersions {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	return kinds
+}
+
+func prefixed(prefix string, values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, prefix+value)
+	}
+	return out
+}
+
+func extractPolicyCelInformation(policy *admissionregistrationv1.ValidatingAdmissionPolicy) *CelInformation {
+	variables := make([]CelVariableInfo, 0, len(policy.Spec.Variables))
 	for _, variable := range policy.Spec.Variables {
 		variables = append(variables, CelVariableInfo{
 			name:       variable.Name,
@@ -102,9 +172,8 @@ func extractVAPV1Alpha1CelInformation(policy *v1alpha1.ValidatingAdmissionPolicy
 		})
 	}
 
-	validations := []CelValidationInfo{}
+	validations := make([]CelValidationInfo, 0, len(policy.Spec.Validations))
 	for _, validation := range policy.Spec.Validations {
-
 		validations = append(validations, CelValidationInfo{
 			expression:        validation.Expression,
 			message:           validation.Message,
@@ -112,7 +181,7 @@ func extractVAPV1Alpha1CelInformation(policy *v1alpha1.ValidatingAdmissionPolicy
 		})
 	}
 
-	auditAnnotations := []CelAuditAnnotationsInfo{}
+	auditAnnotations := make([]CelAuditAnnotationsInfo, 0, len(policy.Spec.AuditAnnotations))
 	for _, auditAnnotation := range policy.Spec.AuditAnnotations {
 		auditAnnotations = append(auditAnnotations, CelAuditAnnotationsInfo{
 			key:        auditAnnotation.Key,
@@ -120,184 +189,21 @@ func extractVAPV1Alpha1CelInformation(policy *v1alpha1.ValidatingAdmissionPolicy
 		})
 	}
 
-	matchConditions := []CelMatchConditionsInfo{}
-	for _, matchCondition := range policy.Spec.MatchConditions {
-		matchConditions = append(matchConditions, CelMatchConditionsInfo{
+	return &CelInformation{
+		variables:        variables,
+		validations:      validations,
+		auditAnnotations: auditAnnotations,
+		matchConditions:  extractMatchConditions(policy.Spec.MatchConditions),
+	}
+}
+
+func extractMatchConditions(matchConditions []admissionregistrationv1.MatchCondition) []CelMatchConditionsInfo {
+	extracted := make([]CelMatchConditionsInfo, 0, len(matchConditions))
+	for _, matchCondition := range matchConditions {
+		extracted = append(extracted, CelMatchConditionsInfo{
 			name:       matchCondition.Name,
 			expression: matchCondition.Expression,
 		})
 	}
-
-	return &CelInformation{
-		name:             name,
-		namespace:        namespace,
-		variables:        variables,
-		validations:      validations,
-		auditAnnotations: auditAnnotations,
-		matchConditions:  matchConditions,
-	}
-}
-
-func extractVAPV1Beta1CelInformation(policy *v1beta1.ValidatingAdmissionPolicy) *CelInformation {
-	namespace := policy.ObjectMeta.GetNamespace()
-	name := policy.ObjectMeta.GetName()
-
-	variables := []CelVariableInfo{}
-	for _, variable := range policy.Spec.Variables {
-		variables = append(variables, CelVariableInfo{
-			name:       variable.Name,
-			expression: variable.Expression,
-		})
-	}
-
-	validations := []CelValidationInfo{}
-	for _, validation := range policy.Spec.Validations {
-
-		validations = append(validations, CelValidationInfo{
-			expression:        validation.Expression,
-			message:           validation.Message,
-			messageExpression: validation.MessageExpression,
-		})
-	}
-
-	auditAnnotations := []CelAuditAnnotationsInfo{}
-	for _, auditAnnotation := range policy.Spec.AuditAnnotations {
-		auditAnnotations = append(auditAnnotations, CelAuditAnnotationsInfo{
-			key:        auditAnnotation.Key,
-			expression: auditAnnotation.ValueExpression,
-		})
-	}
-
-	matchConditions := []CelMatchConditionsInfo{}
-	for _, matchCondition := range policy.Spec.MatchConditions {
-		matchConditions = append(matchConditions, CelMatchConditionsInfo{
-			name:       matchCondition.Name,
-			expression: matchCondition.Expression,
-		})
-	}
-
-	return &CelInformation{
-		name:             name,
-		namespace:        namespace,
-		variables:        variables,
-		validations:      validations,
-		auditAnnotations: auditAnnotations,
-		matchConditions:  matchConditions,
-	}
-}
-
-func extractVAPV1CelInformation(policy *v1.ValidatingAdmissionPolicy) *CelInformation {
-	namespace := policy.ObjectMeta.GetNamespace()
-	name := policy.ObjectMeta.GetName()
-
-	variables := []CelVariableInfo{}
-	for _, variable := range policy.Spec.Variables {
-		variables = append(variables, CelVariableInfo{
-			name:       variable.Name,
-			expression: variable.Expression,
-		})
-	}
-
-	validations := []CelValidationInfo{}
-	for _, validation := range policy.Spec.Validations {
-
-		validations = append(validations, CelValidationInfo{
-			expression:        validation.Expression,
-			message:           validation.Message,
-			messageExpression: validation.MessageExpression,
-		})
-	}
-
-	auditAnnotations := []CelAuditAnnotationsInfo{}
-	for _, auditAnnotation := range policy.Spec.AuditAnnotations {
-		auditAnnotations = append(auditAnnotations, CelAuditAnnotationsInfo{
-			key:        auditAnnotation.Key,
-			expression: auditAnnotation.ValueExpression,
-		})
-	}
-
-	matchConditions := []CelMatchConditionsInfo{}
-	for _, matchCondition := range policy.Spec.MatchConditions {
-		matchConditions = append(matchConditions, CelMatchConditionsInfo{
-			name:       matchCondition.Name,
-			expression: matchCondition.Expression,
-		})
-	}
-
-	return &CelInformation{
-		name:             name,
-		namespace:        namespace,
-		variables:        variables,
-		validations:      validations,
-		auditAnnotations: auditAnnotations,
-		matchConditions:  matchConditions,
-	}
-}
-
-func extractVWV1Beta1CelInformation(webhookConfig *v1beta1.ValidatingWebhookConfiguration) *CelInformation {
-	webhookMatchConditions := [][]CelMatchConditionsInfo{}
-	for _, webhook := range webhookConfig.Webhooks {
-		matchConditions := []CelMatchConditionsInfo{}
-		for _, matchCondition := range webhook.MatchConditions {
-			matchConditions = append(matchConditions, CelMatchConditionsInfo{
-				name:       matchCondition.Name,
-				expression: matchCondition.Expression,
-			})
-		}
-		webhookMatchConditions = append(webhookMatchConditions, matchConditions)
-	}
-	return &CelInformation{
-		webhookMatchConditions: webhookMatchConditions,
-	}
-}
-
-func extractVWV1CelInformation(webhookConfig *v1.ValidatingWebhookConfiguration) *CelInformation {
-	webhookMatchConditions := [][]CelMatchConditionsInfo{}
-	for _, webhook := range webhookConfig.Webhooks {
-		matchConditions := []CelMatchConditionsInfo{}
-		for _, matchCondition := range webhook.MatchConditions {
-			matchConditions = append(matchConditions, CelMatchConditionsInfo{
-				name:       matchCondition.Name,
-				expression: matchCondition.Expression,
-			})
-		}
-		webhookMatchConditions = append(webhookMatchConditions, matchConditions)
-	}
-	return &CelInformation{
-		webhookMatchConditions: webhookMatchConditions,
-	}
-}
-
-func extractMWV1Beta1CelInformation(webhookConfig *v1beta1.MutatingWebhookConfiguration) *CelInformation {
-	webhookMatchConditions := [][]CelMatchConditionsInfo{}
-	for _, webhook := range webhookConfig.Webhooks {
-		matchConditions := []CelMatchConditionsInfo{}
-		for _, matchCondition := range webhook.MatchConditions {
-			matchConditions = append(matchConditions, CelMatchConditionsInfo{
-				name:       matchCondition.Name,
-				expression: matchCondition.Expression,
-			})
-		}
-		webhookMatchConditions = append(webhookMatchConditions, matchConditions)
-	}
-	return &CelInformation{
-		webhookMatchConditions: webhookMatchConditions,
-	}
-}
-
-func extractMWV1CelInformation(webhookConfig *v1.MutatingWebhookConfiguration) *CelInformation {
-	webhookMatchConditions := [][]CelMatchConditionsInfo{}
-	for _, webhook := range webhookConfig.Webhooks {
-		matchConditions := []CelMatchConditionsInfo{}
-		for _, matchCondition := range webhook.MatchConditions {
-			matchConditions = append(matchConditions, CelMatchConditionsInfo{
-				name:       matchCondition.Name,
-				expression: matchCondition.Expression,
-			})
-		}
-		webhookMatchConditions = append(webhookMatchConditions, matchConditions)
-	}
-	return &CelInformation{
-		webhookMatchConditions: webhookMatchConditions,
-	}
+	return extracted
 }

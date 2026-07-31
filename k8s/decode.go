@@ -15,11 +15,43 @@
 package k8s
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	apimachineryjson "k8s.io/apimachinery/pkg/util/json"
+	kjson "sigs.k8s.io/json"
 	sigsyaml "sigs.k8s.io/yaml"
 )
+
+// decodeTyped parses one YAML or JSON document into a Kubernetes API type the
+// way the apiserver parses it: YAML converted to JSON, then unmarshalled
+// case-sensitively with integral numbers preserved.
+//
+// The case sensitivity is the point. sigs.k8s.io/yaml.Unmarshal goes through
+// encoding/json, which matches struct fields case-insensitively, so a policy
+// that said `Validations:` would evaluate here and be ignored by a cluster.
+//
+// strict additionally rejects unknown fields and duplicate keys. Use it where
+// the input is the playground's own answer sheet rather than the object under
+// test: a typo there produces a wrong answer with no other symptom.
+func decodeTyped(input []byte, into any, strict bool) error {
+	jsonBytes, err := sigsyaml.YAMLToJSON(input)
+	if err != nil {
+		return err
+	}
+	if !strict {
+		return kjson.UnmarshalCaseSensitivePreserveInts(jsonBytes, into)
+	}
+	strictErrs, err := kjson.UnmarshalStrict(jsonBytes, into)
+	if err != nil {
+		return err
+	}
+	if len(strictErrs) > 0 {
+		return fmt.Errorf("%w", errors.Join(strictErrs...))
+	}
+	return nil
+}
 
 // decodeObjectInput parses user-supplied resource YAML (the object/oldObject
 // tabs) into the map[string]any the CEL activation binds, reproducing exactly
