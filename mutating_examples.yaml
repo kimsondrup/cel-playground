@@ -371,11 +371,14 @@ examples:
             apiVersions: ["v1"]
             operations:  ["CREATE", "UPDATE"]
             resources:   ["deployments"]
-        # matchConditions gate whether the mutation runs at all -- use them for
-        # checks a label/namespace selector cannot express. This one is a
-        # set-if-absent guard: only default the "tier" label when it is missing.
+        # matchConditions gate the whole policy -- every mutation in it runs, or
+        # none does. Use them for checks a label/namespace selector cannot
+        # express. This one is a set-if-absent guard: only default the "tier"
+        # label when it is missing.
         # Add `tier: <anything>` to the object's labels and re-run: the
-        # condition becomes false and the object comes back unchanged.
+        # condition becomes false, nothing is mutated, and the result says so.
+        # To skip a single mutation while others still run, return an empty
+        # Object{} from it instead.
         matchConditions:
         - name: tier-not-set
           expression: "!has(object.metadata.labels) || !('tier' in object.metadata.labels)"
@@ -534,9 +537,13 @@ examples:
           resources:
             deployments:
               checks:
-                # Nesting is checks[namespace][name][verb]. An empty-string key
-                # means "not scoped to a namespace / name" -- this decision
-                # applies to the update verb on deployments regardless of which.
+                # Nesting is checks[namespace][name][verb], and the keys are
+                # matched exactly. An empty-string key answers a check that
+                # named no namespace and no name, which is the check this
+                # policy makes. Narrowing one with .namespace("default") looks
+                # under a "default" key instead and finds nothing here, so add
+                # the keys for whatever the policy asks about -- unlike a real
+                # ClusterRoleBinding, an entry here covers no other scope.
                 "":
                   "":
                     update:

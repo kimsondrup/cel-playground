@@ -128,7 +128,10 @@ type EvalMutationResult struct {
 type EvalResponse struct {
 	// Warnings is first so it renders at the top of the output panel: the JSON
 	// key order drives the order the accordions are built in.
-	Warnings                 []string              `json:"warnings,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+	// Outcome is a plain sentence saying what the run amounted to, for the
+	// endings a panel otherwise conveys by leaving a section out.
+	Outcome                  string                `json:"outcome,omitempty"`
 	MatchConditionsVariables []*EvalVariable       `json:"matchConditionVariables,omitempty"`
 	MatchConditions          []*EvalResult         `json:"matchConditions,omitempty"`
 	ValidationVariables      []*EvalVariable       `json:"validationVariables,omitempty"`

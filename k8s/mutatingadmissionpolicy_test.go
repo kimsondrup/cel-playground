@@ -792,6 +792,96 @@ spec:
 // expression reading one of those answers differently on each side, and the
 // warning is the only thing that says so -- especially when the matchCondition
 // is what closed the gate, so there is no mutation and no diff to look at.
+// TestOutcomeStatesWhatHappened covers the endings the panel otherwise conveys
+// by leaving a section out. A gate that closed produces no mutation, no diff
+// and no final object, and "why did nothing happen" is the question the mode
+// exists to answer.
+func TestOutcomeStatesWhatHappened(t *testing.T) {
+	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n" +
+		"  labels:\n    app: nginx\nspec:\n  replicas: 1\n")
+	policy := func(failurePolicy, matchCondition, mutation string) []byte {
+		return []byte(`apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: outcome
+spec:
+  failurePolicy: ` + failurePolicy + `
+  reinvocationPolicy: Never
+  matchConditions:
+  - name: gate
+    expression: "` + matchCondition + `"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        ` + mutation + "\n")
+	}
+	const addsALabel = `Object{metadata: Object.metadata{labels: {"ran": "yes"}}}`
+
+	tests := []struct {
+		name           string
+		failurePolicy  string
+		matchCondition string
+		mutation       string
+		want           string
+	}{{
+		name:           "the matchConditions did not match",
+		failurePolicy:  "Ignore",
+		matchCondition: "false",
+		mutation:       addsALabel,
+		want:           "The matchConditions did not match, so no mutation ran",
+	}, {
+		// A cluster does not skip the policy here, it rejects the request.
+		name:           "a matchCondition errored under the default failurePolicy",
+		failurePolicy:  "Fail",
+		matchCondition: "object.metadata.labels['absent'] == 'x'",
+		mutation:       addsALabel,
+		want:           "failurePolicy is Fail, so a cluster would reject the request outright",
+	}, {
+		name:           "a matchCondition errored under failurePolicy Ignore",
+		failurePolicy:  "Ignore",
+		matchCondition: "object.metadata.labels['absent'] == 'x'",
+		mutation:       addsALabel,
+		want:           "failurePolicy is Ignore, so a cluster would admit the request",
+	}, {
+		// Setting a label to the value it already has. Without this the panel
+		// shows a successful mutation and simply omits the diff.
+		name:           "a mutation that changed nothing",
+		failurePolicy:  "Ignore",
+		matchCondition: "true",
+		mutation:       `Object{metadata: Object.metadata{labels: {"app": "nginx"}}}`,
+		want:           "The mutations ran and left the object unchanged.",
+	}, {
+		// The diff says what happened, so there is nothing to add.
+		name:           "a mutation that changed something",
+		failurePolicy:  "Ignore",
+		matchCondition: "true",
+		mutation:       addsALabel,
+		want:           "",
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := k8s.EvalMutatingAdmissionPolicy(
+				policy(tt.failurePolicy, tt.matchCondition, tt.mutation), nil, object, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("EvalMutatingAdmissionPolicy() error = %v", err)
+			}
+			var response k8s.EvalResponse
+			if err := json.Unmarshal([]byte(out), &response); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			switch {
+			case tt.want == "" && response.Outcome != "":
+				t.Errorf("outcome = %q, want none -- the diff already says what happened",
+					response.Outcome)
+			case tt.want != "" && !strings.Contains(response.Outcome, tt.want):
+				t.Errorf("outcome = %q, want it to contain %q", response.Outcome, tt.want)
+			}
+		})
+	}
+}
+
 func TestTabWarningsNameTheDivergence(t *testing.T) {
 	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: prod\nspec:\n  replicas: 1\n")
 	// A matchCondition that reads nothing, so a case naming only a mutation

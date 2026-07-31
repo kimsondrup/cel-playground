@@ -177,6 +177,7 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 	// here, so the playground cannot show a mutated object that a cluster would
 	// never produce.
 	matchConditions := true
+	matchConditionErrored := false
 	matchConditionsEvals := []*evalResponse{}
 	for _, matchCondition := range celInfo.matchConditions {
 		ast, issues := env.Parse(matchCondition.expression)
@@ -185,10 +186,10 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 		}
 		var val *evalResponse
 		if prog, err := env.Program(ast, celProgramOptions...); err != nil {
-			matchConditions = false
+			matchConditions, matchConditionErrored = false, true
 			val = newEvalResponseErr("parsing", matchCondition.expression, err)
 		} else if exprEval, details, err := prog.Eval(activations); err != nil {
-			matchConditions = false
+			matchConditions, matchConditionErrored = false, true
 			val = newEvalResponseErr("evaluating", matchCondition.expression, err)
 		} else {
 			matchConditions = matchConditions && (exprEval.Value() == true)
@@ -290,6 +291,7 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 
 	response := &EvalResponse{
 		Warnings:           warnings,
+		Outcome:            outcome(celInfo, policy, matchConditions, matchConditionErrored, finalObject, diff),
 		MatchConditions:    generateEvalResults(matchConditionsEvals),
 		MutationVariables:  generateEvalVariables(variableNames, variableLazyEvals),
 		Mutations:          mutations,
@@ -335,7 +337,7 @@ func deserializeMutatingAdmissionPolicy(input []byte) (*admissionregistrationv1.
 func notSimulated(policy *admissionregistrationv1.MutatingAdmissionPolicy, schemaBacked bool) string {
 	var lines []string
 	if policy.Spec.MatchConstraints != nil {
-		lines = append(lines, "matchConstraints: the mutations ran against whatever is in the "+
+		lines = append(lines, "matchConstraints: the mutations run against whatever is in the "+
 			"Object tab, whether or not the resourceRules would select it. Only matchConditions "+
 			"can stop a mutation from running here.")
 	}
@@ -497,6 +499,32 @@ func namespaceName(namespaceObject map[string]any) string {
 // admissionOperations are the operations an admission request can carry.
 // Anything else in the Request tab is not one a cluster would send.
 var admissionOperations = []string{"CREATE", "UPDATE", "DELETE", "CONNECT"}
+
+// outcome states what the run amounted to, for a reader who has a panel full of
+// facts and no answer. It covers the endings that are otherwise conveyed by the
+// absence of a section: a gate that closed, and mutations that changed nothing.
+//
+// A policy with no mutations to run has nothing to report here; whatever is on
+// screen is the whole of it.
+func outcome(celInfo *CelInformation, policy *admissionregistrationv1.MutatingAdmissionPolicy,
+	matchConditions, matchConditionErrored bool, finalObject, diff string) string {
+	switch {
+	case len(celInfo.mutations) == 0:
+		return ""
+	case matchConditionErrored && ignoresFailures(policy):
+		return "A matchCondition could not be evaluated, so no mutation ran. failurePolicy is " +
+			"Ignore, so a cluster would admit the request without applying this policy."
+	case matchConditionErrored:
+		return "A matchCondition could not be evaluated, so no mutation ran. failurePolicy is " +
+			"Fail, so a cluster would reject the request outright rather than admit it unchanged."
+	case !matchConditions:
+		return "The matchConditions did not match, so no mutation ran and the object is " +
+			"unchanged. A cluster would admit the request without applying this policy."
+	case finalObject != "" && diff == "":
+		return "The mutations ran and left the object unchanged."
+	}
+	return ""
+}
 
 // tabWarnings reports where the Request and Namespace tabs are read differently
 // by the two halves of an evaluation. The matchConditions and spec.variables are
