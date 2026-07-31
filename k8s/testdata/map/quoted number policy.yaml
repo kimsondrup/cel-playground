@@ -1,0 +1,13 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "quoted-number"
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  mutations:
+  # replicas is declared as an integer, and this writes a string. Nothing in
+  # the patch machinery here objects, so the warning is the only signal.
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: '[JSONPatch{op: "replace", path: "/spec/replicas", value: "10"}]'

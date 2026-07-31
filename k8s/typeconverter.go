@@ -134,6 +134,56 @@ func typeConverterFor(gvk schema.GroupVersionKind) (managedfields.TypeConverter,
 	return schemaConverter, true
 }
 
+// rejectedValues returns the paths in object whose values the generated schema
+// will not accept -- a string where an integer is declared, and the like --
+// each with the reason, sorted, or nil when every value fits.
+//
+// A cluster catches this class for a JSONPatch by decoding the patched document
+// into the typed object, strictly. The playground keeps everything
+// unstructured, so upstream's patcher takes its unstructured branch and never
+// makes that check; without this the object comes back with `replicas: "10"`
+// and nothing says a cluster would have refused it.
+//
+// One parse, unlike undeclaredFields: a value the schema rejects is reported
+// wherever it sits, so there is nothing to prune and repeat.
+func rejectedValues(gvk schema.GroupVersionKind, object runtime.Object) []string {
+	typeConverterOnce.Do(initTypeConverters)
+	if strictParser == nil {
+		return nil
+	}
+	name, err := scheme.Scheme.ToOpenAPIDefinitionName(gvk)
+	if err != nil {
+		return nil
+	}
+	parseable := strictParser.Type(name)
+	if !parseable.IsValid() {
+		return nil
+	}
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(object)
+	if err != nil {
+		return nil
+	}
+	_, err = parseable.FromUnstructured(content)
+	if err == nil {
+		return nil
+	}
+	var validation typed.ValidationErrors
+	if !errors.As(err, &validation) {
+		return nil
+	}
+	var rejected []string
+	for _, item := range validation {
+		// Undeclared fields are the other function's business, and are reported
+		// on their own terms.
+		if strings.Contains(item.ErrorMessage, "field not declared in schema") {
+			continue
+		}
+		rejected = append(rejected, item.Path+": "+item.ErrorMessage)
+	}
+	sort.Strings(rejected)
+	return slices.Compact(rejected)
+}
+
 // undeclaredFields returns the paths in object that the generated schema does
 // not declare, sorted, or nil when every field is known. It reports rather than
 // rejects; see permissiveTypes for why.

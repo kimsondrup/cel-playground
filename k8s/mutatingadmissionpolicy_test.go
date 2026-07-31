@@ -481,6 +481,34 @@ func TestMutationEval(t *testing.T) {
 		finalContains: []string{"second: ran"},
 		wantDiff:      true,
 	}, {
+		// A cluster decodes a patched object into its typed form, strictly, and
+		// refuses a string where the schema declares an integer. Everything
+		// here stays unstructured, so the patch applies cleanly and the warning
+		// is the only thing that says a cluster would have refused it.
+		name:   "a mutation writing a value the schema will not accept",
+		policy: "quoted number policy.yaml",
+		object: "object.yaml",
+		mutations: []mutationExpectation{{
+			patchType: "JSONPatch",
+			contains:  []string{`replicas: "10"`},
+		}},
+		wantWarning: "Mutation 1 writes a value the schema for apps/v1 Deployment does not " +
+			"accept: .spec.replicas: expected numeric (int or float), got string",
+		wantDiff: true,
+	}, {
+		// The object arrived with the bad value, so it is reported once against
+		// the object. The mutation never touched it and must not be named for
+		// it -- the table asserts a single warning.
+		name:   "a value the object arrived with is not blamed on a mutation",
+		policy: "jsonpatch label policy.yaml",
+		object: "rejected value object.yaml",
+		mutations: []mutationExpectation{{
+			patchType: "JSONPatch",
+			contains:  []string{"environment: production"},
+		}},
+		wantWarning: "The schema for apps/v1 Deployment does not accept: .spec.replicas",
+		wantDiff:    true,
+	}, {
 		// The object arrived with the undeclared field, so it is reported once
 		// against the object. A mutation that never touched it must not be
 		// blamed for it a second time -- the table asserts a single warning.

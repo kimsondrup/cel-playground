@@ -731,7 +731,7 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 	var warnings []string
 	// The fields the pasted object already carried, so a mutation is only
 	// blamed for the ones it adds.
-	var objectUndeclared []string
+	var objectUndeclared, objectRejected []string
 	if !schemaBacked {
 		// Only an ApplyConfiguration merge depends on the schema, so a
 		// JSONPatch-only policy is not warned about on its account.
@@ -751,7 +751,14 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 					"for %s.",
 				gvk.GroupVersion().String(), gvk.Kind))
 		}
-	} else if undeclared, more := undeclaredFields(gvk, object); len(undeclared) > 0 {
+	}
+	if objectRejected = rejectedValues(gvk, object); len(objectRejected) > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"The schema for %s does not accept: %s. A cluster would reject the object itself, "+
+				"before any policy ran.",
+			gvk.GroupVersion().String()+" "+gvk.Kind, strings.Join(objectRejected, ", ")))
+	}
+	if undeclared, more := undeclaredFields(gvk, object); len(undeclared) > 0 {
 		// Reported once for the whole object rather than once per field, so an
 		// object with several unknown fields does not bury the rest of the
 		// result under warnings.
@@ -852,6 +859,15 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 				len(results), gvk.GroupVersion().String()+" "+gvk.Kind,
 				strings.Join(added, ", "), andPossiblyMore(more)))
 		}
+		if rejected := without(rejectedValues(gvk, patched), objectRejected); len(rejected) > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"Mutation %d writes a value the schema for %s does not accept: %s. A cluster "+
+					"decodes a patched object strictly and would reject this rather than apply "+
+					"it -- a quoted number is the usual cause.",
+				len(results), gvk.GroupVersion().String()+" "+gvk.Kind, strings.Join(rejected, ", ")))
+		}
+		objectRejected = rejectedValues(gvk, patched)
+
 		// What this mutation leaves behind is the next one's input, so it becomes
 		// the baseline to subtract there. Without this, one typo is blamed on
 		// every mutation that runs after it as well as the one that wrote it.

@@ -1,0 +1,15 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "jsonpatch-label"
+spec:
+  failurePolicy: Ignore
+  reinvocationPolicy: Never
+  mutations:
+  # A JSONPatch works on the document as written, so it applies to an object
+  # whose values a schema would refuse -- which is what makes the value worth
+  # reporting against the object rather than against this mutation.
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: >
+        [JSONPatch{op: "add", path: "/metadata/labels/environment", value: "production"}]
