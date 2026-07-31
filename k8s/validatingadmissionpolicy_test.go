@@ -139,10 +139,10 @@ func TestValidationEval(t *testing.T) {
 				Value: map[string]any{
 					"query": []any{"val"},
 				},
-				Cost: uint64ptr(14),
+				Cost: uint64ptr(19),
 			}},
 			Validations: []*k8s.EvalResult{{Result: true, Cost: uint64ptr(2)}},
-			Cost:        uint64ptr(16),
+			Cost:        uint64ptr(21),
 		},
 	}, {
 		name:    "test valid matchConditions, should see validations and auditAnnotations",
@@ -268,14 +268,14 @@ func TestValidationEval(t *testing.T) {
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result: true,
-				Cost:   uint64ptr(10),
+				Cost:   uint64ptr(350009),
 			}},
 			AuditAnnotations: []*k8s.EvalResult{{
 				Name:    strptr("test-annotation"),
 				Message: "Deployment is allowed in namespace default",
 				Cost:    uint64ptr(4),
 			}},
-			Cost: uint64ptr(23),
+			Cost: uint64ptr(350022),
 		},
 	}, {
 		name:       "test an expression using disallowed authorizer checks",
@@ -296,9 +296,9 @@ func TestValidationEval(t *testing.T) {
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result: false,
-				Cost:   uint64ptr(10),
+				Cost:   uint64ptr(350009),
 			}},
-			Cost: uint64ptr(19),
+			Cost: uint64ptr(350018),
 		},
 	}, {
 		name:    "test a broken expression within variables, expression should fail with no audit annotation",
@@ -422,6 +422,67 @@ func TestValidationEval(t *testing.T) {
 						t.Errorf("Expected %s\n, received %s", expected, response)
 					}
 				}
+			}
+		})
+	}
+}
+
+// TestValidationCELLibraries exercises the CEL libraries added to k8s/cel.go so
+// they stay wired up. Each case is a validation expression that uses one
+// library and must evaluate to true. It asserts availability, not cost, so it
+// checks the result and the absence of an error and does not pin a cost.
+func TestValidationCELLibraries(t *testing.T) {
+	object := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"x"}}`
+	cases := []struct {
+		lib  string
+		expr string
+	}{
+		{"semver", `semver('1.2.3').minor() == 2`},
+		{"ip", `isIP('10.0.0.1') && ip('10.0.0.1').family() == 4`},
+		{"cidr", `isCIDR('10.0.0.0/8') && cidr('10.0.0.0/8').containsIP(ip('10.0.0.1'))`},
+		{"format", `format.named('dns1123Label').hasValue()`},
+		{"sets", `sets.contains([1, 2, 3], [2, 3])`},
+		{"twoVarComprehensions", `[10, 20, 30].all(i, v, v >= 10)`},
+		{"extLists", `[3, 1, 2].sort() == [1, 2, 3]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.lib, func(t *testing.T) {
+			policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: lib-check
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["deployments"]
+  validations:
+    - expression: "` + tc.expr + `"
+`
+			out, err := k8s.EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte(object), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Eval() error = %v", err)
+			}
+			var resp k8s.EvalResponse
+			if err := json.Unmarshal([]byte(out), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(resp.Validations) != 1 {
+				t.Fatalf("got %d validations, want 1: %s", len(resp.Validations), out)
+			}
+			v := resp.Validations[0]
+			if v.IsError {
+				msg := "<nil>"
+				if v.Error != nil {
+					msg = *v.Error
+				}
+				t.Fatalf("%s expression errored (library not registered?): %s", tc.lib, msg)
+			}
+			if v.Result != true {
+				t.Errorf("%s expression = %v, want true", tc.lib, v.Result)
 			}
 		})
 	}

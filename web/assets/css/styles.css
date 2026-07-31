@@ -368,12 +368,12 @@ a {
   position: relative;
   height: 100%;
   width: 100%;
-  /* overflow-y: auto;
-  overflow-x: hidden; */
 }
 
 .editor__output-holder .editor__output {
+  box-sizing: border-box;
   background: #1d1f21;
+  color: #ffffff;
   resize: none;
   height: 100%;
   padding: 12px;
@@ -381,8 +381,12 @@ a {
   width: 100%;
 }
 
-.editor > .editor__output::placeholder {
+.editor__output-holder .editor__output::placeholder {
   color: #e1e7ea;
+}
+
+.editor__output-holder .editor__output.editor__output--error {
+  color: #e01e5a;
 }
 
 /* Buttons and Inputs */

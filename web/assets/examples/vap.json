@@ -39,9 +39,19 @@
       "dataRequest": "",
       "dataAuthorizer": "",
       "category": "Audit"
+    },
+    {
+      "name": "CEL Libraries",
+      "vap": "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: \"cel-libraries\"\nspec:\n  failurePolicy: Fail\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"apps\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"deployments\"]\n  variables:\n    - name: image\n      expression: \"object.spec.template.spec.containers[0].image\"\n    - name: tag\n      expression: \"variables.image.split(':')[1]\"\n  validations:\n    # semver (1.33+): require a released image tag, not a pre-release.\n    - expression: \"isSemver(variables.tag, true) && semver(variables.tag, true).isGreaterThan(semver('v1.0.0', true))\"\n      message: \"the image tag must be a semver greater than v1.0.0\"\n    # format (1.31+): the name must be a valid DNS label. validate()\n    # returns the errors as an optional, empty when the value is valid.\n    - expression: \"!format.dns1123Label().validate(object.metadata.name).hasValue()\"\n      message: \"metadata.name must be a valid DNS1123 label\"\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: default\nspec:\n  replicas: 3\n  selector:\n    matchLabels:\n      app: web\n  template:\n    metadata:\n      labels:\n        app: web\n    spec:\n      containers:\n      - name: web\n        image: registry.io/web:v1.4.0\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": "",
+      "category": "Kubernetes"
     }
   ],
   "versions": {
-    "cel-go": "v0.17.8"
+    "cel-go": "v0.26.0"
   }
 }

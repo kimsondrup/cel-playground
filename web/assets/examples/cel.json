@@ -13,6 +13,12 @@
       "category": "Kubernetes"
     },
     {
+      "name": "Check image tag",
+      "cel": "// Evaluate tags with semver library.\n// https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-semver-library\nsemver(tag, true).isLessThan(semver('v1.0.0', true)) && tag.endsWith('-dev')\n",
+      "dataInput": "tag:\n  v0.9.0-dev\n",
+      "category": "Kubernetes"
+    },
+    {
       "name": "Disallow HostPorts",
       "cel": "// According the Pod Security Standards, HostPorts should be disallowed entirely.\n// https://kubernetes.io/docs/concepts/security/pod-security-standards/#baseline\n\nobject.spec.template.spec.containers.all(container,\n  !has(container.ports) ||\n  container.ports.all(port,\n    !has(port.hostPort) ||\n    port.hostPort == 0\n  )\n)\n",
       "dataInput": "object:\n  apiVersion: apps/v1\n  kind: Deployment\n  metadata:\n    name: nginx\n  spec:\n    template:\n      metadata:\n        name: nginx\n        labels:\n          app: nginx\n      spec:\n        containers:\n          - name: nginx\n            image: nginx\n            ports:\n              - containerPort: 80\n                hostPort: 80 # the expression looks for this field\n    selector:\n      matchLabels:\n        app: nginx\n",
@@ -86,6 +92,6 @@
     }
   ],
   "versions": {
-    "cel-go": "v0.17.8"
+    "cel-go": "v0.26.0"
   }
 }

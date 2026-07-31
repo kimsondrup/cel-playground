@@ -89,9 +89,9 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "authorizer4.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{{
-				{Name: strptr("breakglass"), Result: true, Cost: uint64ptr(7)},
+				{Name: strptr("breakglass"), Result: true, Cost: uint64ptr(350006)},
 			}},
-			Cost: uint64ptr(7),
+			Cost: uint64ptr(350006),
 		},
 	}, {
 		name:       "test multiple webhooks, match conditions will rely on request and authorizer information and will be successful",
@@ -101,10 +101,10 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "multi authorizer1.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{
-				{{Name: strptr("breakglass"), Result: true, Cost: uint64ptr(7)}},
+				{{Name: strptr("breakglass"), Result: true, Cost: uint64ptr(350006)}},
 				{{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(5)}},
 			},
-			Cost: uint64ptr(17),
+			Cost: uint64ptr(350016),
 		},
 	}, {
 		name:       "test multiple webhooks, match conditions will rely on request and authorizer information and will not be successful",
@@ -114,10 +114,10 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "multi authorizer2.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{
-				{{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(7)}},
+				{{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(350006)}},
 				{{Name: strptr("exclude-bootcamp"), Result: false, Cost: uint64ptr(7)}},
 			},
-			Cost: uint64ptr(14),
+			Cost: uint64ptr(350013),
 		},
 	}, {
 		name:       "test multiple webhooks, match conditions will rely on request and authorizer information with mixed responses",
@@ -127,10 +127,10 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "multi authorizer3.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{
-				{{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(7)}},
+				{{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(350006)}},
 				{{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(5)}},
 			},
-			Cost: uint64ptr(17),
+			Cost: uint64ptr(350016),
 		},
 	}, {
 		// The object is decoded the way a cluster decodes it. `eviction: on` is
