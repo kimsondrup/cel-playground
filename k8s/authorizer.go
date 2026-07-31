@@ -226,25 +226,57 @@ func narrowedCheck(entry *ResourceCheck, subresource, namespace, name string) *R
 // decisionFor answers what the fixture says for a verb, given a check already
 // scoped to a group and a resource. A nil result means the fixture has no entry
 // for that combination: no opinion, not a denial.
+//
+// A check scoped to a namespace or a name is answered by an entry for that
+// scope and also by the broader entries above it, because that is what the
+// authorizer a reader has in mind does: a ClusterRoleBinding answers a check in
+// any namespace, and a rule with no resourceNames answers a check on any name.
+// Without that, the most ordinary fixture -- one entry saying the requester may
+// update deployments -- would answer yes to `check("update")` and no to
+// `namespace("default").check("update")`, which is a pair of answers no RBAC
+// configuration can produce.
+//
+// The entries are tried most specific first, so a narrower one still overrides
+// the broader one it sits under, which is the only way to write an exception.
+// The first entry that exists wins whatever it says, rather than the first one
+// that allows: an entry that denies, or that reports the authorizer as
+// unavailable, has to be able to shadow a broader allow.
 func decisionFor(check *ResourceCheck, verb string) *Decision {
 	checks := check.Checks
 	if check.subresource != "" {
-		// A subresource keeps its checks in its own entry under the resource.
+		// A subresource keeps its checks in its own entry under the resource,
+		// and is not broadened: a grant on deployments does not answer for
+		// deployments/scale, nor the other way round.
 		entry, ok := check.Subresources[check.subresource]
 		if !ok || entry == nil {
 			return nil
 		}
 		checks = entry.Checks
 	}
-	namespacedChecks, ok := checks[check.namespace]
-	if !ok {
-		return nil
+	for _, namespace := range answeringKeys(check.namespace) {
+		for _, name := range answeringKeys(check.name) {
+			if decision := checks[namespace][name][verb]; decision != nil {
+				return decision
+			}
+		}
 	}
-	namedChecks, ok := namespacedChecks[check.name]
-	if !ok {
-		return nil
+	return nil
+}
+
+// answeringKeys lists the fixture keys that answer a check scoped to key, most
+// specific first. A check that names nothing is already at its broadest and is
+// answered only by the entry naming nothing -- a Role in one namespace does not
+// answer a cluster-scoped check, and a grant for one object does not answer a
+// check that names none.
+//
+// Namespace is walked outside name, so an entry for the namespace beats one for
+// the name where both exist and neither contains the other. Nothing a cluster
+// can be configured to do distinguishes the two, so the order is a choice.
+func answeringKeys(key string) []string {
+	if key == "" {
+		return []string{""}
 	}
-	return namedChecks[verb]
+	return []string{key, ""}
 }
 
 // pathDecisionFor answers what the fixture says for a non-resource path check. A
