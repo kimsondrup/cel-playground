@@ -30,7 +30,7 @@ import (
 
 type EvalResponse struct {
 	Result any     `json:"result"`
-	Cost   *uint64 `json:"cost, omitempty"`
+	Cost   *uint64 `json:"cost,omitempty"`
 }
 
 var celEnvOptions = []cel.EnvOption{
