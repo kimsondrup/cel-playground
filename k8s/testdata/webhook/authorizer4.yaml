@@ -1,12 +1,26 @@
-paths:
-groups:
-  admissionregistration.k8s.io:
-    resources:
-validatingwebhookconfigurations:
-  checks:
-    "":
-      rbac.my-webhook.example.com:
-        breakglass:
-          decision: allow
-serviceAccounts:
-
+# The webhook's matchCondition skips requests made by anyone authorized to
+# "breakglass" the webhook itself. resourceNames narrows the grant to this one
+# configuration, and the binding is cluster-scoped because
+# ValidatingWebhookConfiguration is.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: webhook-breakglass
+rules:
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingwebhookconfigurations"]
+    resourceNames: ["rbac.my-webhook.example.com"]
+    verbs: ["breakglass"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: admin-webhook-breakglass
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: webhook-breakglass

@@ -1,4 +1,2 @@
-paths:
-groups:
-serviceAccounts:
-
+# Nothing is granted, so the breakglass check is not allowed and the webhook's
+# matchCondition holds.

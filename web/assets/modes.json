@@ -38,7 +38,7 @@
       },
       {
         "id": "dataAuthorizer",
-        "name": "Authorizer",
+        "name": "RBAC",
         "mode": "yaml"
       }
     ]
@@ -66,7 +66,7 @@
       },
       {
         "id": "dataAuthorizer",
-        "name": "Authorizer",
+        "name": "RBAC",
         "mode": "yaml"
       }
     ]

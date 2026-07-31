@@ -1,3 +1,26 @@
-paths:
-groups:
-serviceAccounts:
+# The same grant as authorizer1, bound to somebody else. The request is made by
+# alice, so no rule reaches her and the check is not allowed -- RBAC has no way
+# to say no, only to stay silent.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-admin
+  namespace: default
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["admin"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bob-deployment-admin
+  namespace: default
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: bob
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deployment-admin

@@ -15,7 +15,7 @@
 examples:
   - name: "Simple Validation"
     vap: |
-      apiVersion: admissionregistration.k8s.io/v1alpha1
+      apiVersion: admissionregistration.k8s.io/v1
       kind: ValidatingAdmissionPolicy
       metadata:
         name: "force-ha-in-prod"
@@ -82,7 +82,7 @@ examples:
 
   - name: "Variables in Validation"
     vap: |
-      apiVersion: admissionregistration.k8s.io/v1beta1
+      apiVersion: admissionregistration.k8s.io/v1
       kind: ValidatingAdmissionPolicy
       metadata:
         name: "image-matches-namespace-environment.policy.example.com"
@@ -174,7 +174,7 @@ examples:
 
   - name: "Match Conditions"
     vap: |
-      apiVersion: admissionregistration.k8s.io/v1alpha1
+      apiVersion: admissionregistration.k8s.io/v1
       kind: ValidatingAdmissionPolicy
       metadata:
         name: "demo-policy.example.com"
@@ -277,7 +277,7 @@ examples:
 
   - name: "Audit Annotations"
     vap: |
-      apiVersion: admissionregistration.k8s.io/v1alpha1
+      apiVersion: admissionregistration.k8s.io/v1
       kind: ValidatingAdmissionPolicy
       metadata:
         name: "demo-policy.example.com"
@@ -404,3 +404,93 @@ examples:
     dataAuthorizer: |
 
     category: "Kubernetes"
+
+  - name: "Authorizer"
+    vap: |
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingAdmissionPolicy
+      metadata:
+        name: "restrict-privileged-deployments"
+      spec:
+        failurePolicy: Fail
+        matchConstraints:
+          resourceRules:
+          - apiGroups:   ["apps"]
+            apiVersions: ["v1"]
+            operations:  ["CREATE", "UPDATE"]
+            resources:   ["deployments"]
+        validations:
+          # Only somebody the cluster would let run the "escalate" verb on
+          # deployments may create a privileged one. The verb does not have to
+          # be one the API itself serves -- a rule may name any verb, which is
+          # how a policy asks a question only it cares about.
+          - expression: >-
+              !object.spec.template.spec.containers.exists(c,
+                has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged)
+              || authorizer.group("apps").resource("deployments")
+                   .namespace(object.metadata.namespace).check("escalate").allowed()
+            message: "privileged containers may only be deployed by someone authorized to escalate deployments"
+
+    dataOldObject: |
+
+    dataObject: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: web
+        namespace: default
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: web
+        template:
+          metadata:
+            labels:
+              app: web
+          spec:
+            containers:
+            - name: web
+              image: registry.io/web:v1.4.0
+              securityContext:
+                privileged: true
+
+    dataNamespace: |
+
+    dataRequest: |
+      # The RBAC tab answers questions about this user.
+      userInfo:
+        username: alice
+        groups:
+          - system:authenticated
+          - platform-team
+
+    dataAuthorizer: |
+      # Real RBAC objects, resolved by Kubernetes' own RBAC authorizer. Change
+      # the binding's subject to someone other than alice, or delete it, and the
+      # validation fails.
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: deployment-escalator
+        namespace: default
+      rules:
+        - apiGroups: ["apps"]
+          resources: ["deployments"]
+          verbs: ["escalate"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: alice-deployment-escalator
+        namespace: default
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: alice
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: deployment-escalator
+
+    category: "Authorizer"

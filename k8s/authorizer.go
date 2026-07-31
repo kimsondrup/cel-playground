@@ -15,148 +15,151 @@
 package k8s
 
 import (
+	"bufio"
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"strings"
+	"io"
 
-	yamlv3 "gopkg.in/yaml.v3"
-	admissionv1 "k8s.io/api/admission/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
+	rbacregistry "k8s.io/kubernetes/pkg/registry/rbac/validation"
+	rbacauthorizer "k8s.io/kubernetes/plugin/pkg/auth/authorizer/rbac"
 )
 
-const serviceAccountPrefix = "system:serviceaccount:"
+// The RBAC tab is a stream of these, `---` separated, in the group and version
+// a cluster serves.
+const (
+	rbacGroup      = "rbac.authorization.k8s.io"
+	rbacAPIVersion = rbacGroup + "/v1"
+)
 
-// Authorizer is the playground's authorizer tab: a canned decision tree the
-// user writes by hand, keyed the way the CEL authorization library asks
-// questions.
+// rbacRules holds the RBAC tab's objects and answers the four lookups
+// Kubernetes' rule resolver makes. A cluster answers them from informers; the
+// playground answers them from what is in the tab, and from nothing else, so an
+// unbound Role is invisible exactly as it would be.
+type rbacRules struct {
+	roles               map[string]*rbacv1.Role
+	roleBindings        map[string][]*rbacv1.RoleBinding
+	clusterRoles        map[string]*rbacv1.ClusterRole
+	clusterRoleBindings []*rbacv1.ClusterRoleBinding
+}
+
+var (
+	_ rbacregistry.RoleGetter               = &rbacRules{}
+	_ rbacregistry.RoleBindingLister        = &rbacRules{}
+	_ rbacregistry.ClusterRoleGetter        = &rbacRules{}
+	_ rbacregistry.ClusterRoleBindingLister = &rbacRules{}
+)
+
+func (r *rbacRules) GetRole(_ context.Context, namespace, name string) (*rbacv1.Role, error) {
+	if role, ok := r.roles[namespace+"/"+name]; ok {
+		return role, nil
+	}
+	return nil, fmt.Errorf("no Role %q in namespace %q", name, namespace)
+}
+
+func (r *rbacRules) ListRoleBindings(_ context.Context, namespace string) ([]*rbacv1.RoleBinding, error) {
+	return r.roleBindings[namespace], nil
+}
+
+func (r *rbacRules) GetClusterRole(_ context.Context, name string) (*rbacv1.ClusterRole, error) {
+	if clusterRole, ok := r.clusterRoles[name]; ok {
+		return clusterRole, nil
+	}
+	return nil, fmt.Errorf("no ClusterRole %q", name)
+}
+
+func (r *rbacRules) ListClusterRoleBindings(_ context.Context) ([]*rbacv1.ClusterRoleBinding, error) {
+	return r.clusterRoleBindings, nil
+}
+
+// newRBACAuthorizer resolves the RBAC tab with Kubernetes' own RBAC authorizer,
+// so `authorizer.group(...).resource(...).check(...).allowed()` is answered by
+// the code that answers it on a cluster: wildcards, resourceNames, subresource
+// paths, aggregated ClusterRoles, nonResourceURL prefixes and the
+// system:serviceaccounts groups all behave as they do there.
 //
-// It used to be a CEL value in its own right, implementing traits.Receiver and
-// re-implementing authorizer.group(...).resource(...).check(...) by hand. It is
-// now only *input data*: the CEL side is apiserver's real library.Authz, and
-// this tree is reached through the authorizer.Authorizer interface below.
-//
-// That interface is the seam for a real authorizer. Anything satisfying
-// k8s.io/apiserver/pkg/authorization/authorizer.Authorizer -- an RBAC
-// authorizer built from Roles and RoleBindings, say -- can be swapped in at
-// newPlaygroundAuthorizer without the evaluation code noticing.
-type Authorizer struct {
-	Paths           map[string]*PathCheck             `yaml:"paths,omitempty"`
-	Groups          map[string]*GroupCheck            `yaml:"groups,omitempty"`
-	ServiceAccounts map[string]map[string]*Authorizer `yaml:"serviceAccounts,omitempty"`
-}
-
-type PathCheck struct {
-	Checks map[string]*Decision `yaml:"checks,omitempty"`
-}
-
-type GroupCheck struct {
-	Resources map[string]*ResourceCheck `yaml:"resources,omitempty"`
-}
-
-type ResourceCheck struct {
-	Subresources map[string]*ResourceCheck `yaml:"subresources,omitempty"`
-	// Checks is namespace -> name -> verb -> decision. The empty string is the
-	// wildcard the tab uses for "any namespace" / "any name".
-	Checks map[string]map[string]map[string]*Decision `yaml:"checks,omitempty"`
-}
-
-type Decision struct {
-	Error    string `yaml:"error,omitempty"`
-	Decision string `yaml:"decision,omitempty"`
-	Reason   string `yaml:"reason,omitempty"`
-}
-
-// playgroundAuthorizer answers authorization checks out of the tab's decision
-// tree.
-type playgroundAuthorizer struct {
-	root *Authorizer
-	// requestUser is the user the request itself is made by. Any *other*
-	// service account name reaching Authorize can only have come from
-	// authorizer.serviceAccount(ns, name), so it selects a nested tree.
-	requestUser string
-}
-
-var _ authorizer.Authorizer = &playgroundAuthorizer{}
-
-func newPlaygroundAuthorizer(input []byte, request *admissionv1.AdmissionRequest) (authorizer.Authorizer, error) {
-	root := &Authorizer{}
-	if err := yamlv3.Unmarshal(input, root); err != nil {
-		return nil, fmt.Errorf("failed to decode input for the authorizer: %w", err)
+// RBAC has no way to say no, only to stay silent. `denied()` is therefore
+// always false and a check that no rule allows reports allowed()=false with no
+// opinion, which is what a cluster running RBAC alone reports too.
+func NewRBACAuthorizer(input []byte) (authorizer.Authorizer, error) {
+	rules, err := decodeRBACInput(input)
+	if err != nil {
+		return nil, err
 	}
-	return &playgroundAuthorizer{root: root, requestUser: request.UserInfo.Username}, nil
+	return rbacauthorizer.New(rules, rules, rules, rules), nil
 }
 
-func (p *playgroundAuthorizer) Authorize(_ context.Context, attributes authorizer.Attributes) (authorizer.Decision, string, error) {
-	tree := p.treeFor(attributes)
-	if !attributes.IsResourceRequest() {
-		return decide(lookupPath(tree, attributes))
+func decodeRBACInput(input []byte) (*rbacRules, error) {
+	rules := &rbacRules{
+		roles:        map[string]*rbacv1.Role{},
+		roleBindings: map[string][]*rbacv1.RoleBinding{},
+		clusterRoles: map[string]*rbacv1.ClusterRole{},
 	}
-	return decide(lookupResource(tree, attributes))
-}
-
-// treeFor resolves authorizer.serviceAccount(namespace, name) to the nested
-// tree under serviceAccounts. library.Authz implements that call by swapping
-// the user info for system:serviceaccount:<ns>:<name> and reusing the same
-// Authorizer, so the redirect has to happen here.
-func (p *playgroundAuthorizer) treeFor(attributes authorizer.Attributes) *Authorizer {
-	info := attributes.GetUser()
-	if info == nil {
-		return p.root
-	}
-	name := info.GetName()
-	if name == p.requestUser || !strings.HasPrefix(name, serviceAccountPrefix) {
-		return p.root
-	}
-	namespace, serviceAccount, ok := strings.Cut(strings.TrimPrefix(name, serviceAccountPrefix), ":")
-	if !ok {
-		return &Authorizer{}
-	}
-	if nested, ok := p.root.ServiceAccounts[namespace][serviceAccount]; ok && nested != nil {
-		return nested
-	}
-	return &Authorizer{}
-}
-
-func lookupPath(tree *Authorizer, attributes authorizer.Attributes) *Decision {
-	pathCheck, ok := tree.Paths[attributes.GetPath()]
-	if !ok || pathCheck == nil {
-		return nil
-	}
-	return pathCheck.Checks[attributes.GetVerb()]
-}
-
-func lookupResource(tree *Authorizer, attributes authorizer.Attributes) *Decision {
-	groupCheck, ok := tree.Groups[attributes.GetAPIGroup()]
-	if !ok || groupCheck == nil {
-		return nil
-	}
-	resourceCheck, ok := groupCheck.Resources[attributes.GetResource()]
-	if !ok || resourceCheck == nil {
-		return nil
-	}
-	if subresource := attributes.GetSubresource(); subresource != "" {
-		resourceCheck, ok = resourceCheck.Subresources[subresource]
-		if !ok || resourceCheck == nil {
-			return nil
+	documents := utilyaml.NewYAMLReader(bufio.NewReader(bytes.NewReader(input)))
+	for i := 0; ; i++ {
+		document, err := documents.Read()
+		if err == io.EOF {
+			return rules, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode input for the authorizer: %w", err)
+		}
+		// A document that is only comments or whitespace carries no object.
+		var probe any
+		if err := decodeTyped(document, &probe, false); err != nil {
+			return nil, fmt.Errorf("failed to decode document %d of the authorizer input: %w", i+1, err)
+		}
+		if probe == nil {
+			continue
+		}
+		if err := rules.add(document); err != nil {
+			return nil, fmt.Errorf("failed to decode document %d of the authorizer input: %w", i+1, err)
 		}
 	}
-	return resourceCheck.Checks[attributes.GetNamespace()][attributes.GetName()][attributes.GetVerb()]
 }
 
-func decide(decision *Decision) (authorizer.Decision, string, error) {
-	if decision == nil {
-		return authorizer.DecisionNoOpinion, "", nil
+// add decodes one document strictly, so a misspelled field or a duplicate key
+// is reported rather than dropped. A tab that says something a cluster would
+// not understand is the one thing the playground must never answer quietly.
+func (r *rbacRules) add(document []byte) error {
+	typeMeta := metav1.TypeMeta{}
+	if err := decodeTyped(document, &typeMeta, false); err != nil {
+		return err
 	}
-	if decision.Error != "" {
-		return authorizer.DecisionNoOpinion, decision.Reason, errors.New(decision.Error)
+	if typeMeta.APIVersion != rbacAPIVersion {
+		return fmt.Errorf("apiVersion is %q; the authorizer reads %s objects", typeMeta.APIVersion, rbacAPIVersion)
 	}
-	switch decision.Decision {
-	case "allow":
-		return authorizer.DecisionAllow, decision.Reason, nil
-	case "deny":
-		return authorizer.DecisionDeny, decision.Reason, nil
+	switch typeMeta.Kind {
+	case "Role":
+		role := &rbacv1.Role{}
+		if err := decodeTyped(document, role, true); err != nil {
+			return err
+		}
+		r.roles[role.Namespace+"/"+role.Name] = role
+	case "ClusterRole":
+		clusterRole := &rbacv1.ClusterRole{}
+		if err := decodeTyped(document, clusterRole, true); err != nil {
+			return err
+		}
+		r.clusterRoles[clusterRole.Name] = clusterRole
+	case "RoleBinding":
+		roleBinding := &rbacv1.RoleBinding{}
+		if err := decodeTyped(document, roleBinding, true); err != nil {
+			return err
+		}
+		r.roleBindings[roleBinding.Namespace] = append(r.roleBindings[roleBinding.Namespace], roleBinding)
+	case "ClusterRoleBinding":
+		clusterRoleBinding := &rbacv1.ClusterRoleBinding{}
+		if err := decodeTyped(document, clusterRoleBinding, true); err != nil {
+			return err
+		}
+		r.clusterRoleBindings = append(r.clusterRoleBindings, clusterRoleBinding)
 	default:
-		return authorizer.DecisionNoOpinion, decision.Reason, nil
+		return fmt.Errorf("kind is %q; the authorizer reads Role, ClusterRole, RoleBinding and ClusterRoleBinding", typeMeta.Kind)
 	}
+	return nil
 }

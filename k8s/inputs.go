@@ -26,7 +26,6 @@ import (
 	celplugin "k8s.io/apiserver/pkg/admission/plugin/cel"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/cel/library"
-	"sigs.k8s.io/yaml"
 )
 
 // evalInputs is everything the CEL activation binds, already in the shape
@@ -36,9 +35,12 @@ import (
 // apiserver uses, instead of the hand-written mirror structs the playground
 // used to carry (k8s/requestinfo.go, k8s/namespace.go).
 type evalInputs struct {
-	object                    map[string]any
-	oldObject                 map[string]any
-	request                   map[string]any
+	object    map[string]any
+	oldObject map[string]any
+	request   map[string]any
+	// namespaceObject is the namespace as CreateNamespaceObject exposes it: the
+	// declared CEL type has exactly the fields that trim keeps, so nothing an
+	// expression can name survives it.
 	namespaceObject           map[string]any
 	authorizer                any
 	requestResourceAuthorizer any
@@ -58,9 +60,13 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode input for the new resource value: %w", err)
 	}
-	namespaceObject, err := decodeNamespaceInput(namespaceInput)
+	namespace, err := decodeNamespaceInput(namespaceInput)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode input for the namespace: %w", err)
+	}
+	namespaceObject, err := objectToMap(celplugin.CreateNamespaceObject(namespace))
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert the namespace for evaluation: %w", err)
 	}
 	request, err := decodeRequestInput(requestInput)
 	if err != nil {
@@ -71,7 +77,7 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 		return nil, fmt.Errorf("failed to convert the request for evaluation: %w", err)
 	}
 
-	authorizer, err := newPlaygroundAuthorizer(authorizerInput, request)
+	authorizer, err := NewRBACAuthorizer(authorizerInput)
 	if err != nil {
 		return nil, err
 	}
@@ -87,18 +93,16 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 	}, nil
 }
 
-// decodeNamespaceInput parses the namespace tab as a real core/v1 Namespace and
-// runs it through apiserver's own CreateNamespaceObject, which strips the
-// fields (managedFields, ownerReferences, ...) a cluster does not expose to CEL.
-func decodeNamespaceInput(input []byte) (map[string]any, error) {
+// decodeNamespaceInput parses the namespace tab as a real core/v1 Namespace.
+func decodeNamespaceInput(input []byte) (*corev1.Namespace, error) {
 	if len(strings.TrimSpace(string(input))) == 0 {
 		return nil, nil
 	}
 	namespace := &corev1.Namespace{}
-	if err := yaml.Unmarshal(input, namespace); err != nil {
+	if err := decodeTyped(input, namespace, false); err != nil {
 		return nil, err
 	}
-	return objectToMap(celplugin.CreateNamespaceObject(namespace))
+	return namespace, nil
 }
 
 // decodeRequestInput parses the request tab as a real AdmissionRequest. The
@@ -111,7 +115,7 @@ func decodeRequestInput(input []byte) (*admissionv1.AdmissionRequest, error) {
 	if len(strings.TrimSpace(string(input))) == 0 {
 		return request, nil
 	}
-	if err := yaml.Unmarshal(input, request); err != nil {
+	if err := decodeTyped(input, request, false); err != nil {
 		return nil, err
 	}
 	return request, nil

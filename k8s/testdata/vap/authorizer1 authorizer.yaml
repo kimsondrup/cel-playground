@@ -1,11 +1,27 @@
-paths:
-groups:
-  apps:
-    resources:
-      deployments:
-        checks:
-          default:
-            "":
-              admin:
-                decision: allow
-serviceAccounts:
+# The check the policy makes is
+#   authorizer.group("apps").resource("deployments").namespace(...).check("admin")
+# and RBAC answers it: "admin" is not a built-in verb, but a rule may name any
+# verb, which is how a policy asks a question only it cares about.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-admin
+  namespace: default
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["admin"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: alice-deployment-admin
+  namespace: default
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: alice
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deployment-admin

@@ -16,15 +16,74 @@ CEL Playground is built by compiling Go code to WebAssembly and includes the fol
 - [Kubernetes URL library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-url-library)
 - [Kubernetes semver library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-semver-library)
 
-The Kubernetes policy modes (Validating Admission Policy and Web Hooks)
-additionally include the [IP](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-ip-library),
+The Kubernetes policy modes (Validating Admission Policy and Web Hooks) do not
+assemble an environment of their own. They compile and evaluate expressions with
+the apiserver's own compiler, `k8s.io/apiserver/pkg/admission/plugin/cel`, so
+whichever libraries a cluster offers are exactly the ones offered here -- the
+[IP](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-ip-library),
 [CIDR](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-cidr-library)
 and [format](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-format-library)
-libraries, two-variable comprehensions, and the CEL list extension (`.sort()`),
-matching the CEL environment a Kubernetes apiserver exposes.
+libraries, two-variable comprehensions and the CEL list extension (`.sort()`)
+among them. The footer reports which Kubernetes release's CEL environment is in
+use; an apiserver stays compatible with the release before its own, so that is
+one minor behind the apiserver the playground is built from.
 
-Take a look at the environment options in [eval/eval.go](eval/eval.go) (the CEL
-mode) and [k8s/cel.go](k8s/cel.go) (the Kubernetes modes).
+Take a look at the environment options in [eval/eval.go](eval/eval.go) for the
+CEL mode.
+
+## The RBAC tab
+
+Policies and webhook match conditions can ask whether the user making the
+request is allowed to do something:
+
+```
+authorizer.group("apps").resource("deployments").namespace("default").check("escalate").allowed()
+```
+
+The RBAC tab is the answer to those questions. It takes real
+`rbac.authorization.k8s.io/v1` `Role`, `ClusterRole`, `RoleBinding` and
+`ClusterRoleBinding` objects, `---` separated, and resolves them with the RBAC
+authorizer Kubernetes itself runs -- so wildcards, `resourceNames`, subresource
+paths, aggregated ClusterRoles, `nonResourceURLs` prefixes and the
+`system:serviceaccounts` groups behave the way they do on a cluster. The subject
+is whatever `request.userInfo` says, or the service account named by
+`authorizer.serviceAccount(namespace, name)`.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-escalator
+  namespace: default
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["escalate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: alice-deployment-escalator
+  namespace: default
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: alice
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deployment-escalator
+```
+
+Two things follow from this being real RBAC. A verb does not have to be one the
+API serves -- `escalate` above is a question only the policy cares about, and a
+rule may name any verb. And RBAC has no way to say no, only to stay silent, so
+`denied()` is always false and an unauthorized check reports `allowed()` false
+with no opinion, exactly as it would on a cluster running RBAC alone.
+
+The tab is read strictly: an unknown field, a duplicate key, an unexpected kind
+or an apiVersion other than `rbac.authorization.k8s.io/v1` is reported rather
+than ignored.
 
 ## Development
 

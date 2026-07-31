@@ -395,9 +395,12 @@ examples:
             - some-value2
 
     dataAuthorizer: |
-      paths:
-      groups:
-      serviceAccounts:
+      # Nothing here grants "breakglass", so the check is not allowed and the
+      # match condition holds: the webhook is called.
+      #
+      # This tab is read by Kubernetes' own RBAC authorizer, so it takes the
+      # same Role, ClusterRole, RoleBinding and ClusterRoleBinding objects a
+      # cluster does. The subject is request.userInfo.
 
     category: "Authorizer"
 
@@ -501,17 +504,31 @@ examples:
             - some-value2
 
     dataAuthorizer: |
-      paths:
-      groups:
-        admissionregistration.k8s.io:
-          resources:
-            validatingwebhookconfigurations:
-              checks:
-                "":
-                  rbac.my-webhook.example.com:
-                    breakglass:
-                      decision: allow
-      serviceAccounts:
+      # "admin" is granted "breakglass" on this one webhook configuration, so
+      # the check is allowed, the negated match condition is false, and the
+      # webhook is skipped for this request.
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: webhook-breakglass
+      rules:
+        - apiGroups: ["admissionregistration.k8s.io"]
+          resources: ["validatingwebhookconfigurations"]
+          resourceNames: ["rbac.my-webhook.example.com"]
+          verbs: ["breakglass"]
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: admin-webhook-breakglass
+      subjects:
+        - kind: User
+          apiGroup: rbac.authorization.k8s.io
+          name: admin
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: webhook-breakglass
 
     category: "Authorizer"
 
