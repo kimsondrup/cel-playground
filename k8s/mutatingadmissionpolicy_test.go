@@ -794,14 +794,16 @@ spec:
 // is what closed the gate, so there is no mutation and no diff to look at.
 func TestTabWarningsNameTheDivergence(t *testing.T) {
 	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\n  namespace: prod\nspec:\n  replicas: 1\n")
-	mutation := `
-  mutations:
-  - patchType: ApplyConfiguration
-    applyConfiguration:
-      expression: >
-        Object{metadata: Object.metadata{labels: {"ran": "yes"}}}
-`
-	policy := func(matchCondition string) []byte {
+	// A matchCondition that reads nothing, so a case naming only a mutation
+	// expression is testing the mutation side alone.
+	const inertMatchCondition = "true"
+	policy := func(matchCondition, mutation string) []byte {
+		if matchCondition == "" {
+			matchCondition = inertMatchCondition
+		}
+		if mutation == "" {
+			mutation = `Object{metadata: Object.metadata{labels: {"ran": "yes"}}}`
+		}
 		return []byte(`apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingAdmissionPolicy
 metadata:
@@ -811,14 +813,28 @@ spec:
   reinvocationPolicy: Never
   matchConditions:
   - name: gate
-    expression: "` + matchCondition + `"` + mutation)
+    expression: "` + matchCondition + `"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        ` + mutation + "\n")
 	}
 
 	tests := []struct {
 		name           string
 		matchCondition string
-		namespace      []byte
-		want           string
+		// mutation overrides the default mutation expression, for the cases
+		// where the mutation is the only thing reading a tab.
+		mutation  string
+		operation string
+		// request overrides the Request tab, which is otherwise left out
+		// entirely -- the case the warning is mostly about.
+		request   []byte
+		namespace []byte
+		want      string
+		// notWant must not appear in the warning.
+		notWant string
 	}{{
 		// The gate closes because request.name is empty on this side while the
 		// mutation would have read "nginx".
@@ -841,6 +857,36 @@ spec:
 		namespace:      []byte(""),
 		want:           "The Namespace tab names no namespace",
 	}, {
+		// The mutation is the only thing reading the tab, and it is the case
+		// with no other output to reason from: the mutation fails, and without
+		// this the only thing on screen says a cluster would have denied the
+		// request -- for a policy that works on any real cluster.
+		name:      "only a mutation reads the namespace tab",
+		mutation:  `Object{metadata: Object.metadata{annotations: {"ns": namespaceObject.metadata.name}}}`,
+		namespace: []byte(""),
+		want:      "The Namespace tab names no namespace",
+	}, {
+		name:     "only a mutation reads the request tab",
+		mutation: `Object{metadata: Object.metadata{annotations: {"n": request.name}}}`,
+		want:     "The Request tab leaves",
+	}, {
+		// Set, but not an operation a cluster sends. Worse than leaving it
+		// blank, because the tab side reads it back verbatim.
+		name:           "an operation no cluster sends",
+		matchCondition: "request.operation == 'PATCH'",
+		operation:      "PATCH",
+		want:           "which is not one of CREATE, UPDATE, DELETE, CONNECT",
+	}, {
+		// Only the resource is missing, so only the resource may be explained.
+		// A fixed list of substitutions would tell the reader their mutation
+		// saw CREATE when the tab plainly says UPDATE.
+		name:     "a request tab missing only the resource",
+		mutation: `Object{metadata: Object.metadata{annotations: {"n": request.name}}}`,
+		request: []byte("name: \"nginx\"\nnamespace: \"prod\"\noperation: \"UPDATE\"\n" +
+			"kind:\n  group: \"apps\"\n  version: \"v1\"\n  kind: \"Deployment\"\n"),
+		want:    "leaves resource unset",
+		notWant: "CREATE",
+	}, {
 		// resources.requests is not the Request tab. A policy looking at
 		// container resources is common enough that matching it would put the
 		// warning on screen for most of them.
@@ -857,9 +903,14 @@ spec:
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// The Request tab is left out entirely, which is the case the
-			// warning is about.
-			out, err := k8s.EvalMutatingAdmissionPolicy(policy(tt.matchCondition), nil, object, tt.namespace, nil, nil)
+			// The Request tab is left out entirely unless the case sets an
+			// operation, which is the case the warning is about.
+			request := tt.request
+			if tt.operation != "" {
+				request = []byte("operation: \"" + tt.operation + "\"\n")
+			}
+			out, err := k8s.EvalMutatingAdmissionPolicy(
+				policy(tt.matchCondition, tt.mutation), nil, object, tt.namespace, request, nil)
 			if err != nil {
 				t.Fatalf("EvalMutatingAdmissionPolicy() error = %v", err)
 			}
@@ -878,6 +929,8 @@ spec:
 				t.Errorf("got warning %q, want none -- no expression reads the tab", got)
 			case tt.want != "" && !strings.Contains(got, tt.want):
 				t.Errorf("warning = %q, want it to contain %q", got, tt.want)
+			case tt.notWant != "" && strings.Contains(got, tt.notWant):
+				t.Errorf("warning = %q, want it not to mention %q", got, tt.notWant)
 			}
 		})
 	}

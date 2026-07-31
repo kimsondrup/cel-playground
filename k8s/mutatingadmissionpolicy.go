@@ -235,7 +235,7 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 	// where the reader has least to go on: no mutation, no diff, and a gate that
 	// closed for a reason nothing on screen explains.
 	if len(celInfo.mutations) > 0 {
-		warnings = append(warnings, tabWarnings(celInfo, request, namespaceObject, objectValue)...)
+		warnings = append(warnings, tabWarnings(policy, celInfo, request, namespaceObject, objectValue)...)
 	}
 
 	if matchConditions && len(celInfo.mutations) > 0 {
@@ -449,6 +449,20 @@ func displayExpressions(celInfo *CelInformation) []string {
 	return expressions
 }
 
+// mutationExpressions returns the expressions the apiserver's compiler runs.
+func mutationExpressions(policy *admissionregistrationv1.MutatingAdmissionPolicy) []string {
+	expressions := make([]string, 0, len(policy.Spec.Mutations))
+	for _, mutation := range policy.Spec.Mutations {
+		if mutation.ApplyConfiguration != nil {
+			expressions = append(expressions, mutation.ApplyConfiguration.Expression)
+		}
+		if mutation.JSONPatch != nil {
+			expressions = append(expressions, mutation.JSONPatch.Expression)
+		}
+	}
+	return expressions
+}
+
 // readsAny reports whether any expression mentions one of the given names.
 //
 // The name has to stand on its own: `request` must not match the `requests` in
@@ -480,57 +494,98 @@ func namespaceName(namespaceObject map[string]any) string {
 	return name
 }
 
-// tabWarnings reports where the matchConditions and the mutations were given
-// different answers for the same tab, which happens when a tab is left
-// incomplete: this environment binds it as typed, while the mutations read an
-// admission attribute record built with the object filling the gaps.
+// admissionOperations are the operations an admission request can carry.
+// Anything else in the Request tab is not one a cluster would send.
+var admissionOperations = []string{"CREATE", "UPDATE", "DELETE", "CONNECT"}
+
+// tabWarnings reports where the Request and Namespace tabs are read differently
+// by the two halves of an evaluation. The matchConditions and spec.variables are
+// given the tabs as typed. The mutations are given an admission attribute
+// record, built the way a cluster builds one: it holds no blanks, so a missing
+// name or namespace is taken from the object, the resource is guessed from its
+// kind, and the operation is CREATE.
 //
-// Only raised where an expression on the display side actually reads the tab in
-// question, since otherwise nothing could have observed the difference.
-func tabWarnings(celInfo *CelInformation, request, namespaceObject, objectValue map[string]any) []string {
-	expressions := displayExpressions(celInfo)
+// Every warning here is raised only when some expression actually reads the tab
+// in question, on either side -- otherwise nothing could have observed the
+// difference and the warning would be noise.
+func tabWarnings(policy *admissionregistrationv1.MutatingAdmissionPolicy, celInfo *CelInformation,
+	request, namespaceObject, objectValue map[string]any) []string {
+	display := displayExpressions(celInfo)
+	all := append(append([]string{}, display...), mutationExpressions(policy)...)
 	var warnings []string
 
+	if readsAny(all, "request", "authorizer.requestResource") {
+		warnings = append(warnings, requestTabWarnings(request, objectValue)...)
+	}
+
+	if readsAny(all, "namespaceObject") {
+		if namespaceName(namespaceObject) == "" {
+			warnings = append(warnings, "The Namespace tab names no namespace. A matchCondition "+
+				"or variable is given every field of it, empty; a mutation is given only the "+
+				"fields that were set, so reading one there fails outright rather than returning "+
+				"an empty string. Name the namespace to have both read the same object.")
+		} else if readsAny(display, "has") {
+			// The typed namespace the mutations get marshals with omitempty, so
+			// a field nobody set is absent there and present-and-empty here.
+			// Only has() can tell the difference.
+			warnings = append(warnings, "The Namespace tab leaves fields unset, and has() does "+
+				"not answer for them the same way on both sides: a matchCondition or variable is "+
+				"given every field, so has() is true, while a mutation is given only the fields "+
+				"that were set. Set the fields the policy asks about to have both agree.")
+		}
+	}
+	return warnings
+}
+
+// requestTabWarnings reports what the Request tab left for the mutations to
+// fill in, naming only the fields actually missing -- a warning that explains a
+// discrepancy has to be right about which fields it covers.
+func requestTabWarnings(request, objectValue map[string]any) []string {
 	blank := func(field string) bool {
 		value, ok := request[field].(string)
 		return !ok || value == ""
 	}
 	object := &unstructured.Unstructured{Object: objectValue}
-	missing := []string{}
+
+	var missing, substitutes []string
 	if blank("name") && object.GetName() != "" {
 		missing = append(missing, "name")
+		substitutes = append(substitutes, "the object's own name")
 	}
 	if blank("namespace") && object.GetNamespace() != "" {
 		missing = append(missing, "namespace")
+		substitutes = append(substitutes, "the object's own namespace")
+	}
+	if resource, ok := request["resource"].(map[string]any); !ok || resource["resource"] == nil || resource["resource"] == "" {
+		missing = append(missing, "resource")
+		substitutes = append(substitutes, "the resource guessed from the object's kind")
 	}
 	if blank("operation") {
 		missing = append(missing, "operation")
-	}
-	if resource, ok := request["resource"].(map[string]any); !ok || resource["resource"] == "" || resource["resource"] == nil {
-		missing = append(missing, "resource")
-	}
-	if len(missing) > 0 && readsAny(expressions, "request", "authorizer.requestResource") {
-		warnings = append(warnings, fmt.Sprintf(
-			"The Request tab leaves %s unset, and the matchConditions and the mutations do not "+
-				"read that the same way: a matchCondition sees the tab as typed, while a mutation "+
-				"sees what a cluster would have sent -- the object's own name and namespace, the "+
-				"resource guessed from its kind, and CREATE. Fill the tab in to have both read "+
-				"the same request.", strings.Join(missing, ", ")))
+		substitutes = append(substitutes, "CREATE")
 	}
 
-	if namespaceName(namespaceObject) == "" && readsAny(expressions, "namespaceObject") {
-		warnings = append(warnings, "The Namespace tab names no namespace, and the matchConditions "+
-			"and the mutations do not read that the same way: a matchCondition is given every "+
-			"field, empty, while a mutation is given only the fields that were set -- so reading "+
-			"one there fails outright rather than returning an empty string. Name the namespace "+
-			"to have both read the same object.")
+	var warnings []string
+	if len(missing) > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"The Request tab leaves %s unset. A matchCondition or variable reads the tab as "+
+				"typed, so those are empty there, while a mutation is given what a cluster would "+
+				"have sent: %s. Fill the tab in to have both read the same request.",
+			strings.Join(missing, ", "), strings.Join(substitutes, ", ")))
+	}
+
+	// A value that is set but is not an operation a cluster sends is worse than
+	// a blank one: the tab side reads it back verbatim, so nothing looks wrong.
+	if operation, ok := request["operation"].(string); ok && operation != "" &&
+		!slices.Contains(admissionOperations, operation) {
+		warnings = append(warnings, fmt.Sprintf(
+			"The Request tab sets operation: %s, which is not one of %s. A matchCondition or "+
+				"variable reads it back as typed, while a mutation is given CREATE.",
+			operation, strings.Join(admissionOperations, ", ")))
 	}
 	return warnings
 }
 
-// unknownFieldPattern matches the field name in sigs.k8s.io/yaml's strict-mode
-// complaint. Anything else in that error is a shape problem the lenient decode
-// above has already reported on its own terms.
 var unknownFieldPattern = regexp.MustCompile(`unknown field "([^"]+)"`)
 
 // mutationRun is the outcome of evaluating a policy's spec.mutations.
