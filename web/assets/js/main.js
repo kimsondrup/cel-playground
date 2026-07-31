@@ -87,6 +87,10 @@ function run() {
   WebAssembly.instantiate(buffer, go.importObject)
     .then((result) => {
       go.run(result.instance);
+      if (globalThis.kubernetesEnvVersion) {
+        document.getElementById("kubernetes-env").innerText =
+          ` | Kubernetes ${globalThis.kubernetesEnvVersion} CEL`;
+      }
       document.getElementById("run").disabled = false;
       document.getElementById("output").placeholder =
         "Press 'Run' to evaluate your CEL expression.";

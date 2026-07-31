@@ -65,6 +65,7 @@ var modeExecFns = map[string]execFunction{
 
 func main() {
 	defer addFunction("eval", dynamicEvalWrapper).Release()
+	js.Global().Set("kubernetesEnvVersion", k8s.PlaygroundEnvVersion())
 	<-make(chan bool)
 }
 
