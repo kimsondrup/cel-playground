@@ -15,6 +15,8 @@
 package k8s
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -22,7 +24,11 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
 )
 
 func TestUnifiedDiff(t *testing.T) {
@@ -140,6 +146,235 @@ func TestUnifiedDiffHunkCountsMatchBody(t *testing.T) {
 
 	if hunks != 2 {
 		t.Errorf("got %d hunks, want 2 (the two edits are far enough apart to split):\n%s", hunks, got)
+	}
+}
+
+func TestMutationAuthorizer(t *testing.T) {
+	config := &Authorizer{
+		Paths: map[string]*PathCheck{
+			"/healthz": {Checks: map[string]*Decision{
+				"get": {Decision: "allow", Reason: "path-allowed"},
+			}},
+		},
+		Groups: map[string]*GroupCheck{
+			"apps": {Resources: map[string]*ResourceCheck{
+				"deployments": {
+					Checks: map[string]map[string]map[string]*Decision{
+						"": {"": {
+							"update": {Decision: "allow", Reason: "root-allow"},
+							"delete": {Decision: "deny", Reason: "root-deny"},
+							"patch":  {Error: "authorization webhook unreachable", Reason: "root-error"},
+						}},
+						"prod": {"web": {
+							"update": {Decision: "allow", Reason: "namespaced-allow"},
+						}},
+					},
+					Subresources: map[string]*ResourceCheck{
+						"status": {Checks: map[string]map[string]map[string]*Decision{
+							"": {"": {"update": {Decision: "deny", Reason: "subresource-deny"}}},
+						}},
+					},
+				},
+			}},
+		},
+		ServiceAccounts: map[string]map[string]*Authorizer{
+			"default": {"builder": {Groups: map[string]*GroupCheck{
+				"apps": {Resources: map[string]*ResourceCheck{
+					"deployments": {Checks: map[string]map[string]map[string]*Decision{
+						"": {"": {"update": {Decision: "allow", Reason: "service-account-allow"}}},
+					}},
+				}},
+			}}},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		attributes  authorizer.AttributesRecord
+		wantAllowed authorizer.Decision
+		wantReason  string
+		wantErr     bool
+	}{{
+		name:        "resource check allows",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update"},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "root-allow",
+	}, {
+		name:        "resource check denies",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "delete"},
+		wantAllowed: authorizer.DecisionDeny,
+		wantReason:  "root-deny",
+	}, {
+		name:        "an errored decision keeps its reason",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "patch"},
+		wantAllowed: authorizer.DecisionNoOpinion,
+		wantReason:  "root-error",
+		wantErr:     true,
+	}, {
+		name:        "an unknown verb has no opinion",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "create"},
+		wantAllowed: authorizer.DecisionNoOpinion,
+	}, {
+		name:        "namespace and name select a different entry",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Namespace: "prod", Name: "web", Verb: "update"},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "namespaced-allow",
+	}, {
+		name:        "subresources are resolved",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Subresource: "status", Verb: "update"},
+		wantAllowed: authorizer.DecisionDeny,
+		wantReason:  "subresource-deny",
+	}, {
+		name:        "path checks are resolved",
+		attributes:  authorizer.AttributesRecord{Path: "/healthz", Verb: "get"},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "path-allowed",
+	}, {
+		name: "a service account user resolves the serviceAccounts section",
+		attributes: authorizer.AttributesRecord{
+			ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+			User: &user.DefaultInfo{Name: "system:serviceaccount:default:builder"},
+		},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "service-account-allow",
+	}, {
+		name: "an unknown service account gets an empty authorizer, not the root one",
+		attributes: authorizer.AttributesRecord{
+			ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+			User: &user.DefaultInfo{Name: "system:serviceaccount:default:unknown"},
+		},
+		wantAllowed: authorizer.DecisionNoOpinion,
+	}, {
+		name: "a non-service-account user uses the root authorizer",
+		attributes: authorizer.AttributesRecord{
+			ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+			User: &user.DefaultInfo{Name: "alice"},
+		},
+		wantAllowed: authorizer.DecisionAllow,
+		wantReason:  "root-allow",
+	}, {
+		// The tab matches its keys as they were written, the way the receivers in
+		// k8s/authorizer.go do, so a padded attribute is a different key.
+		name:        "keys are matched as they were written",
+		attributes:  authorizer.AttributesRecord{ResourceRequest: true, APIGroup: " apps ", Resource: " deployments ", Verb: " update "},
+		wantAllowed: authorizer.DecisionNoOpinion,
+		wantReason:  "",
+	}}
+
+	adapter := &mutationAuthorizer{config: config}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision, reason, err := adapter.Authorize(context.Background(), tt.attributes)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Authorize() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if decision != tt.wantAllowed {
+				t.Errorf("decision = %v, want %v", decision, tt.wantAllowed)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestMutationAuthorizerNoticesSelectors pins what the adapter does with a
+// fieldSelector() / labelSelector() narrowing: it answers from the un-narrowed
+// entry anyway, and records that it did so the caller can warn. Without the
+// record the wrong answer is silent, since a narrowed check returns an ordinary
+// decision.
+func TestMutationAuthorizerNoticesSelectors(t *testing.T) {
+	fieldRequirements := fields.OneTermEqualSelector("spec.nodeName", "node-a").Requirements()
+	labelRequirements, err := labels.ParseToRequirements("env=prod")
+	if err != nil {
+		t.Fatalf("failed to build label requirements: %v", err)
+	}
+
+	base := authorizer.AttributesRecord{
+		ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+	}
+	config := &Authorizer{Groups: map[string]*GroupCheck{
+		"apps": {Resources: map[string]*ResourceCheck{
+			"deployments": {Checks: map[string]map[string]map[string]*Decision{
+				"": {"": {"update": {Decision: "allow", Reason: "un-narrowed"}}},
+			}},
+		}},
+	}}
+
+	tests := []struct {
+		name         string
+		narrow       func(*authorizer.AttributesRecord)
+		wantNarrowed bool
+	}{{
+		name:         "an un-narrowed check is not recorded",
+		narrow:       func(*authorizer.AttributesRecord) {},
+		wantNarrowed: false,
+	}, {
+		name: "a field selector is recorded",
+		narrow: func(attr *authorizer.AttributesRecord) {
+			attr.FieldSelectorRequirements = fieldRequirements
+		},
+		wantNarrowed: true,
+	}, {
+		name: "a label selector is recorded",
+		narrow: func(attr *authorizer.AttributesRecord) {
+			attr.LabelSelectorRequirements = labelRequirements
+		},
+		wantNarrowed: true,
+	}, {
+		// Upstream records an unparseable selector on the attributes rather than
+		// refusing the call, so ignoring it is the same silence as ignoring a
+		// valid one.
+		name: "an unparseable selector is recorded",
+		narrow: func(attr *authorizer.AttributesRecord) {
+			attr.LabelSelectorParsingErr = errors.New("found '!!!', expected: identifier")
+		},
+		wantNarrowed: true,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attributes := base
+			tt.narrow(&attributes)
+
+			adapter := &mutationAuthorizer{config: config, mutation: 2}
+			decision, reason, err := adapter.Authorize(context.Background(), attributes)
+			if err != nil {
+				t.Fatalf("Authorize() error = %v", err)
+			}
+			// The un-narrowed answer either way: that is the finding, not an
+			// aspiration.
+			if decision != authorizer.DecisionAllow || reason != "un-narrowed" {
+				t.Errorf("Authorize() = (%v, %q), want (Allow, \"un-narrowed\")", decision, reason)
+			}
+
+			var want []int
+			if tt.wantNarrowed {
+				want = []int{2}
+			}
+			if !reflect.DeepEqual(adapter.narrowedMutations, want) {
+				t.Errorf("narrowedMutations = %v, want %v", adapter.narrowedMutations, want)
+			}
+
+			// A second check of the same mutation must not be recorded twice: each
+			// mutation is evaluated once for its cost and once inside the patcher.
+			if _, _, err := adapter.Authorize(context.Background(), attributes); err != nil {
+				t.Fatalf("Authorize() error = %v", err)
+			}
+			if !reflect.DeepEqual(adapter.narrowedMutations, want) {
+				t.Errorf("narrowedMutations after a repeat check = %v, want %v", adapter.narrowedMutations, want)
+			}
+		})
+	}
+}
+
+func TestMutationAuthorizerWithoutConfig(t *testing.T) {
+	adapter := &mutationAuthorizer{}
+	decision, reason, err := adapter.Authorize(context.Background(), authorizer.AttributesRecord{
+		ResourceRequest: true, APIGroup: "apps", Resource: "deployments", Verb: "update",
+	})
+	if err != nil || decision != authorizer.DecisionNoOpinion || reason != "" {
+		t.Errorf("Authorize() = (%v, %q, %v), want (NoOpinion, \"\", nil)", decision, reason, err)
 	}
 }
 
