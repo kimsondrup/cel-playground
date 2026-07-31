@@ -76,7 +76,8 @@ const errorTooltips = {
 // accessible name.
 function sectionLabel(item, name, i, total) {
   // A bare string is its own label: "finalObject[0]" would be misleading.
-  // warnings is the one list of them, so those keep their index.
+  // warnings is the one list of them, and an index only helps once there is
+  // more than one to tell apart, so a lone warning is labelled "warnings".
   if (isPlainResult(item)) return total > 1 ? `${name}[${i}]` : name;
   // item.name is a validation or variable name straight out of the policy.
   if (item.name) return `${name}.${item.name}`;

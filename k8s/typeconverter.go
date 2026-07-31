@@ -181,6 +181,7 @@ func undeclaredFields(gvk schema.GroupVersionKind, object runtime.Object) ([]str
 			break
 		}
 		found := false
+		undeclaredRemain := false
 		for _, item := range validation {
 			// Only undeclared fields are collected. Any other validation
 			// failure is a real error and the permissive parse surfaces it on
@@ -188,6 +189,7 @@ func undeclaredFields(gvk schema.GroupVersionKind, object runtime.Object) ([]str
 			if !strings.Contains(item.ErrorMessage, "field not declared in schema") {
 				continue
 			}
+			undeclaredRemain = true
 			if _, repeat := seen[item.Path]; repeat {
 				continue
 			}
@@ -198,9 +200,13 @@ func undeclaredFields(gvk schema.GroupVersionKind, object runtime.Object) ([]str
 			}
 		}
 		if !found {
-			// Nothing left that can be pruned -- a path through a list element,
-			// or a field name containing a dot. Report what was found, and say
-			// that more may exist rather than implying the list is complete.
+			// Two different endings. If the parse still names an undeclared
+			// field that could not be pruned -- a path through a list element,
+			// or a field name containing a dot -- the search is stuck and more
+			// may exist. If it names none, every undeclared field has been
+			// found and the parse is only still failing for some unrelated
+			// reason, so the list is complete.
+			truncated = undeclaredRemain
 			break
 		}
 	}

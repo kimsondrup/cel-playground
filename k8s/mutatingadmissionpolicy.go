@@ -341,8 +341,8 @@ func notSimulated(policy *admissionregistrationv1.MutatingAdmissionPolicy, schem
 	}
 	if policy.Spec.ParamKind != nil {
 		lines = append(lines, "paramKind: there is no params input, so params is bound to nothing. "+
-			"An expression reading it errors, and has(params...) is false where a cluster would "+
-			"find the object.")
+			"A matchCondition or variable reading it errors, even under has(); inside a mutation "+
+			"has(params...) is false, where a cluster would have found the object.")
 	}
 	if policy.Spec.ReinvocationPolicy == admissionregistrationv1.IfNeededReinvocationPolicy {
 		lines = append(lines, "reinvocationPolicy: IfNeeded asks for another pass after other "+
@@ -1005,10 +1005,15 @@ func requestResource(request *AdmissionRequest, gvk schema.GroupVersionKind) sch
 	}
 }
 
-// guessResource applies the usual English pluralization Kubernetes uses for
-// resource names: NetworkPolicy -> networkpolicies, Ingress -> ingresses,
-// Deployment -> deployments. Kinds that are already plural (Endpoints) are left
-// alone.
+// guessResource applies ordinary English pluralization to a kind to get the
+// resource name: NetworkPolicy -> networkpolicies, Ingress -> ingresses,
+// ComponentStatus -> componentstatuses, Deployment -> deployments. Endpoints is
+// already plural and is left alone.
+//
+// Deliberately not meta.UnsafeGuessKindToResource, which a cluster uses for the
+// same job: that turns every trailing y into ies, so a Gateway becomes
+// gatewaies. This is the guess for a Request tab that names no resource, and a
+// reader who disagrees with it can fill the tab in.
 func guessResource(kind string) string {
 	lower := strings.ToLower(kind)
 	switch {

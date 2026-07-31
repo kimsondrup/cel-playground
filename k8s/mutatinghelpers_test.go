@@ -545,6 +545,34 @@ func TestSchemaCoverageBeyondEmbeddedSpecs(t *testing.T) {
 // TestUndeclaredFieldsAreAllReported covers the preserve-and-warn path.
 // structured-merge-diff stops walking a map at its first undeclared field, so
 // without the pruning loop in undeclaredFields only one of these would surface.
+// TestUndeclaredFieldsCompleteBesideAnotherError covers an object that is both
+// missing a field from the schema and wrong about a declared one. The probe
+// prunes until the parse stops naming undeclared fields, and the parse then
+// keeps failing on the type error -- which says nothing about whether any
+// undeclared field is left, so the list is complete and must not be reported
+// as possibly truncated.
+func TestUndeclaredFieldsCompleteBesideAnotherError(t *testing.T) {
+	gvk := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "demo"},
+		"spec": map[string]any{
+			// Declared, but a string where the schema wants an integer.
+			"replicas": "three",
+			"alpha":    "1",
+		},
+	}}
+	got, more := undeclaredFields(gvk, object)
+	if want := []string{".spec.alpha"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("undeclaredFields() = %v, want %v", got, want)
+	}
+	if more {
+		t.Error("undeclaredFields() reported the list as incomplete, want complete -- the parse " +
+			"still fails, but on the type error, which hides no undeclared field")
+	}
+}
+
 func TestUndeclaredFieldsAreAllReported(t *testing.T) {
 	gvk := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
 	object := &unstructured.Unstructured{Object: map[string]any{
