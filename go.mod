@@ -3,6 +3,7 @@ module github.com/undistro/cel-playground
 go 1.26.0
 
 require (
+	github.com/aymanbagabas/go-udiff v0.4.1
 	github.com/google/cel-go v0.26.0
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	gopkg.in/yaml.v2 v2.4.0
