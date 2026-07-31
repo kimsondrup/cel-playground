@@ -785,10 +785,6 @@ spec:
 	}
 }
 
-// TestUnreferencedVariableIsNotEvaluated pins that a variable no expression
-// reads is left alone. A cluster binds spec.variables lazily and never
-// evaluates one nothing asks for, so it cannot fail there; evaluating it here
-// would report an error against a variable that a cluster would not have run.
 // TestTabWarningsNameTheDivergence covers the two environments reading one tab
 // differently. The matchConditions are given the tabs as typed; the mutations
 // are given an admission attribute record, which has no blanks to offer and
@@ -845,6 +841,13 @@ spec:
 		namespace:      []byte(""),
 		want:           "The Namespace tab names no namespace",
 	}, {
+		// resources.requests is not the Request tab. A policy looking at
+		// container resources is common enough that matching it would put the
+		// warning on screen for most of them.
+		name:           "a matchCondition reading container resource requests",
+		matchCondition: "object.spec.template.spec.containers.all(c, has(c.resources))",
+		want:           "",
+	}, {
 		// Named, so the field the expression reads is set on both sides.
 		name:           "a matchCondition reading a named namespace tab",
 		matchCondition: "namespaceObject.metadata.name == 'prod'",
@@ -880,6 +883,10 @@ spec:
 	}
 }
 
+// TestUnreferencedVariableIsNotEvaluated pins that a variable no expression
+// reads is left alone. A cluster binds spec.variables lazily and never
+// evaluates one nothing asks for, so it cannot fail there; evaluating it here
+// would report an error against a variable that a cluster would not have run.
 func TestUnreferencedVariableIsNotEvaluated(t *testing.T) {
 	policy := []byte(`apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingAdmissionPolicy

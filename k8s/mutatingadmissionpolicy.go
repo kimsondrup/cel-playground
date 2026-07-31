@@ -387,9 +387,6 @@ func unknownPolicyFields(input []byte) []string {
 	return slices.Compact(fields)
 }
 
-// unknownFieldPattern matches the field name in sigs.k8s.io/yaml's strict-mode
-// complaint. Anything else in that error is a shape problem the lenient decode
-// above has already reported on its own terms.
 // variableReference matches a read of a spec.variables entry. Kubernetes binds
 // them under a map called variables, so every read is variables.<name> and a
 // name is an ordinary CEL identifier.
@@ -452,14 +449,18 @@ func displayExpressions(celInfo *CelInformation) []string {
 	return expressions
 }
 
-// readsAny reports whether any expression mentions one of the given names. It
-// is a plain substring search, so it over-reports -- a name inside a string
-// literal counts -- which for a warning means the occasional unnecessary one
-// rather than a missing one.
+// readsAny reports whether any expression mentions one of the given names.
+//
+// The name has to stand on its own: `request` must not match the `requests` in
+// `c.resources.requests`, which is one of the more common things a policy looks
+// at and has nothing to do with the Request tab. Matching inside a string
+// literal is still possible, which costs an unnecessary warning rather than a
+// missing one.
 func readsAny(expressions []string, names ...string) bool {
-	for _, expression := range expressions {
-		for _, name := range names {
-			if strings.Contains(expression, name) {
+	for _, name := range names {
+		word := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
+		for _, expression := range expressions {
+			if word.MatchString(expression) {
 				return true
 			}
 		}
@@ -527,6 +528,9 @@ func tabWarnings(celInfo *CelInformation, request, namespaceObject, objectValue 
 	return warnings
 }
 
+// unknownFieldPattern matches the field name in sigs.k8s.io/yaml's strict-mode
+// complaint. Anything else in that error is a shape problem the lenient decode
+// above has already reported on its own terms.
 var unknownFieldPattern = regexp.MustCompile(`unknown field "([^"]+)"`)
 
 // mutationRun is the outcome of evaluating a policy's spec.mutations.

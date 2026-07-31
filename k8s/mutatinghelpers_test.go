@@ -102,8 +102,6 @@ func TestUnifiedDiff(t *testing.T) {
 	}
 }
 
-// TestUnifiedDiffHunkCountsMatchBody guards the @@ headers against drifting out
-// of sync with the lines that follow them.
 // splitLines splits a rendered diff into lines, dropping the trailing newline
 // so a diff that ends in one does not yield a final empty line.
 func splitLines(s string) []string {
@@ -113,6 +111,8 @@ func splitLines(s string) []string {
 	return strings.Split(strings.TrimSuffix(s, "\n"), "\n")
 }
 
+// TestUnifiedDiffHunkCountsMatchBody guards the @@ headers against drifting out
+// of sync with the lines that follow them.
 func TestUnifiedDiffHunkCountsMatchBody(t *testing.T) {
 	from := "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\n"
 	to := "l1\nCHANGED\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nCHANGED15\n"
