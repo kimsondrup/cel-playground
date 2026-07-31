@@ -364,3 +364,45 @@ webhooks:
 		}
 	}
 }
+
+// A cluster abandons a chain of expressions once it has spent its budget and
+// fails the request. The playground keeps going, so that the expression that
+// overran is still visible, and reports the overrun instead.
+func TestReportsRunningPastACostBudget(t *testing.T) {
+	// Every authorizer check costs 350006, and matchConditions have a budget of
+	// 2500000, so eight of them run past it.
+	conditions := ""
+	for i := 0; i < 8; i++ {
+		conditions += fmt.Sprintf(`
+    - name: check-%d
+      expression: 'authorizer.group("apps").resource("deployments").check("get").allowed() || true'`, i)
+	}
+	policy := `
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: expensive
+spec:
+  matchConditions:` + conditions + `
+  validations:
+    - expression: "true"
+`
+	out, err := EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte("apiVersion: apps/v1\nkind: Deployment\n"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalValidatingAdmissionPolicy() error: %v", err)
+	}
+	response := EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.ExceededBudgets) != 1 {
+		t.Fatalf("EvalValidatingAdmissionPolicy() reported %d exceeded budgets, want 1: %s", len(response.ExceededBudgets), out)
+	}
+	exceeded := response.ExceededBudgets[0]
+	if exceeded.Name == nil || *exceeded.Name != "matchConditions" {
+		t.Errorf("exceededBudgets[0].name = %v, want matchConditions", exceeded.Name)
+	}
+	if !exceeded.IsError || exceeded.Error == nil || !strings.Contains(*exceeded.Error, "2500000") {
+		t.Errorf("exceededBudgets[0] = %+v, want an error naming the 2500000 budget", exceeded)
+	}
+}

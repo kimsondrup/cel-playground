@@ -413,3 +413,58 @@ spec:
 		}
 	}
 }
+
+// An audit annotation is compiled with `authorizer` declared and evaluated with
+// it unbound, so calling it compiles and then fails. Both sides must agree on
+// that, and on the message. This is the case that caught ExactCosts binding an
+// authorizer the apiserver does not.
+func TestAuthorizerIsUnboundInAuditAnnotations(t *testing.T) {
+	const source = `
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: authorizer-in-audit-annotation
+spec:
+  validations:
+    - expression: "true"
+  auditAnnotations:
+    - key: who
+      valueExpression: 'authorizer.group("apps").resource("deployments").check("get").allowed() ? "yes" : "no"'
+`
+	object := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: d\n  namespace: default\n"
+
+	out, err := k8s.EvalValidatingAdmissionPolicy([]byte(source), nil, []byte(object), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("playground eval: %v", err)
+	}
+	playground := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &playground); err != nil {
+		t.Fatalf("decoding the playground response: %v", err)
+	}
+	if len(playground.AuditAnnotations) != 1 || !playground.AuditAnnotations[0].IsError {
+		t.Fatalf("the playground evaluated the audit annotation without complaint: %s", out)
+	}
+
+	policy, err := oracle.ParsePolicy(source)
+	if err != nil {
+		t.Fatalf("parsing the policy: %v", err)
+	}
+	obj, err := oracle.ParseUnstructured(object)
+	if err != nil {
+		t.Fatalf("parsing the object: %v", err)
+	}
+	authz, err := k8s.NewRBACAuthorizer(nil)
+	if err != nil {
+		t.Fatalf("building the authorizer: %v", err)
+	}
+	result, err := oracle.Evaluate(context.Background(), policy, oracle.InProcessRequest{Object: obj, Authorizer: authz})
+	if err != nil {
+		t.Fatalf("upstream evaluate: %v", err)
+	}
+	if len(result.AuditAnnotations) != 1 || result.AuditAnnotations[0].Error == "" {
+		t.Fatalf("upstream published the audit annotation: %s", oracle.FormatResult(result))
+	}
+	if !strings.Contains(result.AuditAnnotations[0].Error, "authorizer") {
+		t.Errorf("upstream failed for an unexpected reason: %s", result.AuditAnnotations[0].Error)
+	}
+}

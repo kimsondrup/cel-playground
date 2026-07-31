@@ -408,8 +408,10 @@ func ExactCosts(ctx context.Context, policy *admissionregistrationv1.ValidatingA
 	)
 	ns := celplugin.CreateNamespaceObject(req.Namespace)
 
-	// Upstream's two binding sets: everything except messageExpression gets the
-	// authorizer.
+	// Upstream's two binding sets. Only the matchConditions and the validations
+	// are given the authorizer: validator.Validate passes bindings without it to
+	// both the messageExpressions and the auditAnnotations, so an audit
+	// annotation that calls `authorizer` compiles and then fails at evaluation.
 	withAuthz := celplugin.OptionalVariableBindings{VersionedParams: params, Authorizer: authz}
 	withoutAuthz := celplugin.OptionalVariableBindings{VersionedParams: params}
 
@@ -439,7 +441,7 @@ func ExactCosts(ctx context.Context, policy *admissionregistrationv1.ValidatingA
 	if costs.MessageExpressions, err = spend(parts.messageExpressions, withoutAuthz, full-costs.Validations); err != nil {
 		return costs, fmt.Errorf("messageExpressions: %w", err)
 	}
-	if costs.AuditAnnotations, err = spend(parts.auditAnnotations, withAuthz, full); err != nil {
+	if costs.AuditAnnotations, err = spend(parts.auditAnnotations, withoutAuthz, full); err != nil {
 		return costs, fmt.Errorf("auditAnnotations: %w", err)
 	}
 	return costs, nil

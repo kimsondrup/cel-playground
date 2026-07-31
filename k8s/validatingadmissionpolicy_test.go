@@ -493,7 +493,7 @@ func TestValidationEval(t *testing.T) {
 	}
 }
 
-// TestValidationCELLibraries exercises the CEL libraries added to k8s/cel.go so
+// TestValidationCELLibraries exercises the CEL libraries the apiserver offers, so
 // they stay wired up. Each case is a validation expression that uses one
 // library and must evaluate to true. It asserts availability, not cost, so it
 // checks the result and the absence of an error and does not pin a cost.

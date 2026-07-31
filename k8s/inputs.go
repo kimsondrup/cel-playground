@@ -28,12 +28,10 @@ import (
 	"k8s.io/apiserver/pkg/cel/library"
 )
 
-// evalInputs is everything the CEL activation binds, already in the shape
-// apiserver's environment declares: `request` is a real
-// admission.k8s.io/v1 AdmissionRequest and `namespaceObject` a real
-// core/v1 Namespace, both flattened with the same unstructured converter the
-// apiserver uses, instead of the hand-written mirror structs the playground
-// used to carry (k8s/requestinfo.go, k8s/namespace.go).
+// evalInputs is everything the CEL activation binds, in the shape apiserver's
+// environment declares: `request` is a real admission.k8s.io/v1
+// AdmissionRequest and `namespaceObject` a real core/v1 Namespace, both
+// flattened with the unstructured converter the apiserver uses.
 type evalInputs struct {
 	object    map[string]any
 	oldObject map[string]any
