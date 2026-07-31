@@ -77,9 +77,9 @@ func TestWebhookEval(t *testing.T) {
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{{
 				{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)},
-				{Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(5)},
+				{Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)},
 			}},
-			Cost: uint64ptr(10),
+			Cost: uint64ptr(11),
 		},
 	}, {
 		name:       "test a single webhook, match conditions will rely on authorizer information",
@@ -102,9 +102,9 @@ func TestWebhookEval(t *testing.T) {
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{
 				{{Name: strptr("breakglass"), Result: true, Cost: uint64ptr(350006)}},
-				{{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(5)}},
+				{{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)}},
 			},
-			Cost: uint64ptr(350016),
+			Cost: uint64ptr(350017),
 		},
 	}, {
 		name:       "test multiple webhooks, match conditions will rely on request and authorizer information and will not be successful",
@@ -128,9 +128,9 @@ func TestWebhookEval(t *testing.T) {
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{
 				{{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(350006)}},
-				{{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(5)}},
+				{{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)}},
 			},
-			Cost: uint64ptr(350016),
+			Cost: uint64ptr(350017),
 		},
 	}, {
 		// The object is decoded the way a cluster decodes it. `eviction: on` is

@@ -15,12 +15,12 @@
 package k8s
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
-	"github.com/google/cel-go/interpreter"
 	"github.com/undistro/cel-playground/utils"
 )
 
@@ -30,30 +30,31 @@ type evalResponseError struct {
 }
 
 func newEvalResponseErr(operation, expression string, err error) *evalResponse {
-	switch celErr := err.(type) {
-	case *types.Err:
-		underlying := celErr.Unwrap()
-		switch evalErr := underlying.(type) {
-		case *evalResponseError:
-			return &evalResponse{
-				val: types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression '%s', caused by nested exception: '%s'", operation, expression, evalErr.cause), evalErr.cause}),
-			}
-		default:
-			return &evalResponse{
-				val: types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression %s: %s", operation, expression, underlying), underlying}),
-			}
-		}
-	default:
+	underlying := err
+	if celErr, ok := err.(*types.Err); ok {
+		underlying = celErr.Unwrap()
+	}
+	// An expression that dereferenced a variable which itself failed reports the
+	// variable's failure as the cause, so the panel points at the real culprit.
+	// cel-go does not always hand the error back as a *types.Err, so unwrap the
+	// chain rather than type-switching on the top-level value.
+	var evalErr *evalResponseError
+	if errors.As(underlying, &evalErr) {
 		return &evalResponse{
-			val: types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression %s: %s", operation, expression, err), err}),
+			val: types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression '%s', caused by nested exception: '%s'", operation, expression, evalErr.cause), evalErr.cause}),
 		}
+	}
+	return &evalResponse{
+		val: types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression %s: %s", operation, expression, underlying), underlying}),
 	}
 }
 
 type evalResponse struct {
-	name       string
-	val        ref.Val
-	details    *cel.EvalDetails
+	name string
+	val  ref.Val
+	// cost is the CEL runtime cost this response accounts for. It is nil when
+	// nothing ran -- a compilation failure costs nothing.
+	cost       *uint64
 	messageVal ref.Val
 	message    string
 }
@@ -64,37 +65,40 @@ func newEvalResponse(name string, exprEval ref.Val, details *cel.EvalDetails, me
 	return &evalResponse{
 		name:       name,
 		val:        exprEval,
-		details:    details,
+		cost:       getCost(details),
 		messageVal: messageVal,
 		message:    message,
 	}
 }
 
-type lazyVariableEval struct {
-	name string
-	ast  *cel.Ast
-	val  *evalResponse
-}
-
-func (lve *lazyVariableEval) eval(env *cel.Env, activation interpreter.Activation) ref.Val {
-	val := lve.evalExpression(env, activation)
-	lve.val = val
-	return val.val
-}
-
-func (lve *lazyVariableEval) evalExpression(env *cel.Env, activation interpreter.Activation) *evalResponse {
-	prog, err := env.Program(lve.ast, celProgramOptions...)
-	if err != nil {
-		return newEvalResponseErr("parsing", lve.name, err)
+// isError reports whether the expression produced an error rather than a value.
+func (r *evalResponse) isError() bool {
+	if r == nil || r.val == nil {
+		return false
 	}
-	val, details, err := prog.Eval(activation)
-	if err != nil {
-		return newEvalResponseErr("evaluating", lve.name, err)
-	}
-	return newEvalResponse(lve.name, val, details, "", nil)
+	_, ok := r.val.Value().(error)
+	return ok
 }
 
-type lazyEvalMap map[string]*lazyVariableEval
+// addCost folds a second expression's cost into this response. A validation
+// whose messageExpression also ran is charged for both, the way the apiserver
+// charges both against the request's cost budget.
+func (r *evalResponse) addCost(cost *uint64) {
+	if cost == nil {
+		return
+	}
+	if r.cost == nil {
+		total := *cost
+		r.cost = &total
+		return
+	}
+	total := *r.cost + *cost
+	r.cost = &total
+}
+
+// evalResults holds the lazily evaluated variables of one scope, keyed by name.
+// A variable only gains an entry once some expression dereferences it.
+type evalResults map[string]*evalResponse
 
 type EvalVariable struct {
 	Name    string  `json:"name"`
@@ -148,15 +152,15 @@ func getCost(details *cel.EvalDetails) *uint64 {
 	return details.ActualCost()
 }
 
-func generateEvalVariables(names []string, lazyEvals lazyEvalMap) []*EvalVariable {
+func generateEvalVariables(names []string, results evalResults) []*EvalVariable {
 	variables := []*EvalVariable{}
 	for _, name := range names {
-		if varLazyEval, ok := lazyEvals[name]; ok && varLazyEval.val != nil {
-			value, err := getResults(varLazyEval.val.val)
+		if result, ok := results[name]; ok && result != nil {
+			value, err := getResults(result.val)
 			variables = append(variables, &EvalVariable{
-				Name:    varLazyEval.name,
+				Name:    name,
 				Value:   value,
-				Cost:    getCost(varLazyEval.val.details),
+				Cost:    result.cost,
 				Error:   err,
 				IsError: err != nil,
 			})
@@ -182,7 +186,7 @@ func generateEvalResults(responses evalResponses) []*EvalResult {
 		evals = append(evals, &EvalResult{
 			Name:    name,
 			Result:  value,
-			Cost:    getCost(eval.details),
+			Cost:    eval.cost,
 			Error:   err,
 			IsError: err != nil,
 			Message: message,
@@ -200,11 +204,11 @@ func generateEvalArrayResults(responses []evalResponses) [][]*EvalResult {
 	return evalsArray
 }
 
-func calculateLazyEvalCost(lazyEvals lazyEvalMap) uint64 {
+func calculateVariablesCost(results evalResults) uint64 {
 	var cost uint64
-	for _, lazyEval := range lazyEvals {
-		if lazyEval.val != nil && lazyEval.val.details != nil {
-			cost += *lazyEval.val.details.ActualCost()
+	for _, result := range results {
+		if result != nil && result.cost != nil {
+			cost += *result.cost
 		}
 	}
 	return cost
@@ -213,8 +217,8 @@ func calculateLazyEvalCost(lazyEvals lazyEvalMap) uint64 {
 func calculateEvalResponsesCost(evals evalResponses) uint64 {
 	var cost uint64
 	for _, eval := range evals {
-		if eval.details != nil {
-			cost += *eval.details.ActualCost()
+		if eval.cost != nil {
+			cost += *eval.cost
 		}
 	}
 	return cost
@@ -228,21 +232,21 @@ func calculateEvalResponsesArrayCost(evalsArray []evalResponses) uint64 {
 	return cost
 }
 
-func generateEvalResponse(matchConditionsVariableNames []string, matchConditionsVariableLazyEvals lazyEvalMap, matchConditionsEvals evalResponses,
-	validationVariableNames []string, validationVariableLazyEvals lazyEvalMap, validationEvals evalResponses,
+func generateEvalResponse(matchConditionsVariableNames []string, matchConditionsVariables evalResults, matchConditionsEvals evalResponses,
+	validationVariableNames []string, validationVariables evalResults, validationEvals evalResponses,
 	auditAnnotationEvals evalResponses, webhookMatchConditionsEvals []evalResponses) *EvalResponse {
 
-	cost := calculateLazyEvalCost(matchConditionsVariableLazyEvals)
+	cost := calculateVariablesCost(matchConditionsVariables)
 	cost += calculateEvalResponsesCost(matchConditionsEvals)
-	cost += calculateLazyEvalCost(validationVariableLazyEvals)
+	cost += calculateVariablesCost(validationVariables)
 	cost += calculateEvalResponsesCost(validationEvals)
 	cost += calculateEvalResponsesCost(auditAnnotationEvals)
 	cost += calculateEvalResponsesArrayCost(webhookMatchConditionsEvals)
 
 	return &EvalResponse{
-		MatchConditionsVariables: generateEvalVariables(matchConditionsVariableNames, matchConditionsVariableLazyEvals),
+		MatchConditionsVariables: generateEvalVariables(matchConditionsVariableNames, matchConditionsVariables),
 		MatchConditions:          generateEvalResults(matchConditionsEvals),
-		ValidationVariables:      generateEvalVariables(validationVariableNames, validationVariableLazyEvals),
+		ValidationVariables:      generateEvalVariables(validationVariableNames, validationVariables),
 		Validations:              generateEvalResults(validationEvals),
 		AuditAnnotations:         generateEvalResults(auditAnnotationEvals),
 		WebhookMatchConditions:   generateEvalArrayResults(webhookMatchConditionsEvals),

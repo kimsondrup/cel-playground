@@ -17,6 +17,7 @@ package k8s_test
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/undistro/cel-playground/k8s"
@@ -86,8 +87,8 @@ func TestValidationEval(t *testing.T) {
 				Value: "default",
 				Cost:  uint64ptr(6),
 			}},
-			Validations: []*k8s.EvalResult{{Result: false, Cost: uint64ptr(2)}},
-			Cost:        uint64ptr(8),
+			Validations: []*k8s.EvalResult{{Result: false, Cost: uint64ptr(3)}},
+			Cost:        uint64ptr(9),
 		},
 	}, {
 		name:    "test an expression with variables, expression should succeed with audit annotation",
@@ -102,14 +103,14 @@ func TestValidationEval(t *testing.T) {
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result: true,
-				Cost:   uint64ptr(2),
+				Cost:   uint64ptr(3),
 			}},
 			AuditAnnotations: []*k8s.EvalResult{{
 				Name:    strptr("foo-label"),
 				Message: "Label for foo is set to bar",
-				Cost:    uint64ptr(2),
+				Cost:    uint64ptr(5),
 			}},
-			Cost: uint64ptr(15),
+			Cost: uint64ptr(19),
 		},
 	}, {
 		name:    "test an expression with variables evaluating to a map, expression should succeed",
@@ -125,24 +126,35 @@ func TestValidationEval(t *testing.T) {
 				},
 				Cost: uint64ptr(5),
 			}},
-			Validations: []*k8s.EvalResult{{Result: true, Cost: uint64ptr(2)}},
-			Cost:        uint64ptr(7),
+			Validations: []*k8s.EvalResult{{Result: true, Cost: uint64ptr(3)}},
+			Cost:        uint64ptr(8),
 		},
 	}, {
-		name:    "test an expression with variables evaluating to query parameters in a URL, expression should succeed",
+		// This fixture used to be asserted as a successful evaluation. The
+		// apiserver's compiler rejects it, and so would a cluster at policy
+		// creation time: the two branches of the ternary have incompatible
+		// types (map(string, list(string)) and null), which the playground's
+		// old env.Parse path never noticed. The URL library itself is still
+		// covered, by TestValidationCELLibraries.
+		name:    "test a variable the apiserver's type checker rejects",
 		policy:  "variable4 policy.yaml",
 		orig:    "",
 		updated: "variable4 updated.yaml",
 		expected: k8s.EvalResponse{
 			ValidationVariables: []*k8s.EvalVariable{{
-				Name: "foo",
-				Value: map[string]any{
-					"query": []any{"val"},
-				},
-				Cost: uint64ptr(19),
+				Name:    "foo",
+				IsError: true,
+				Error: strptr("foo: compilation failed: ERROR: <input>:1:47: found no matching overload for '_?_:_' applied to '(bool, map(string, list(string)), null)'\n" +
+					" | 'foo' in object.spec.template.metadata.labels ? url(object.spec.template.metadata.labels['foo']).getQuery() : null\n" +
+					" | ..............................................^"),
 			}},
-			Validations: []*k8s.EvalResult{{Result: true, Cost: uint64ptr(2)}},
-			Cost:        uint64ptr(21),
+			Validations: []*k8s.EvalResult{{
+				IsError: true,
+				Error: strptr("unexpected error evaluating expression 'variables.foo != null', caused by nested exception: 'foo: compilation failed: ERROR: <input>:1:47: found no matching overload for '_?_:_' applied to '(bool, map(string, list(string)), null)'\n" +
+					" | 'foo' in object.spec.template.metadata.labels ? url(object.spec.template.metadata.labels['foo']).getQuery() : null\n" +
+					" | ..............................................^'"),
+			}},
+			Cost: uint64ptr(0),
 		},
 	}, {
 		name:    "test valid matchConditions, should see validations and auditAnnotations",
@@ -158,15 +170,15 @@ func TestValidationEval(t *testing.T) {
 			}, {
 				Name:   strptr("exclude-kubelet-requests"),
 				Result: true,
-				Cost:   uint64ptr(5),
+				Cost:   uint64ptr(6),
 			}},
-			Validations: []*k8s.EvalResult{{Result: true, Cost: uint64ptr(5)}},
+			Validations: []*k8s.EvalResult{{Result: true, Cost: uint64ptr(6)}},
 			AuditAnnotations: []*k8s.EvalResult{{
 				Name:    strptr("test-annotation"),
 				Message: "Name is kubernetes-bootcamp, namespace is default",
-				Cost:    uint64ptr(9),
+				Cost:    uint64ptr(19),
 			}},
-			Cost: uint64ptr(24),
+			Cost: uint64ptr(36),
 		},
 	}, {
 		name:    "test invalid matchConditions, should not see validations and auditAnnotations",
@@ -183,13 +195,13 @@ func TestValidationEval(t *testing.T) {
 			MatchConditions: []*k8s.EvalResult{{
 				Name:   strptr("exclude-leases"),
 				Result: true,
-				Cost:   uint64ptr(2),
+				Cost:   uint64ptr(3),
 			}, {
 				Name:   strptr("exclude-kubelet-requests"),
 				Result: false,
 				Cost:   uint64ptr(5),
 			}},
-			Cost: uint64ptr(11),
+			Cost: uint64ptr(12),
 		},
 	}, {
 		name:      "test an expression using namespace attributes",
@@ -231,13 +243,13 @@ func TestValidationEval(t *testing.T) {
 						"terminationMessagePolicy": "File",
 					},
 				},
-				Cost: uint64ptr(18),
+				Cost: uint64ptr(32),
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result: true,
-				Cost:   uint64ptr(11),
+				Cost:   uint64ptr(20),
 			}},
-			Cost: uint64ptr(50),
+			Cost: uint64ptr(73),
 		},
 	}, {
 		name:    "test an expression using request attributes",
@@ -264,18 +276,18 @@ func TestValidationEval(t *testing.T) {
 			}, {
 				Name:  "isProd",
 				Value: true,
-				Cost:  uint64ptr(2),
+				Cost:  uint64ptr(3),
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result: true,
-				Cost:   uint64ptr(350009),
+				Cost:   uint64ptr(350010),
 			}},
 			AuditAnnotations: []*k8s.EvalResult{{
 				Name:    strptr("test-annotation"),
 				Message: "Deployment is allowed in namespace default",
-				Cost:    uint64ptr(4),
+				Cost:    uint64ptr(8),
 			}},
-			Cost: uint64ptr(350022),
+			Cost: uint64ptr(350028),
 		},
 	}, {
 		name:       "test an expression using disallowed authorizer checks",
@@ -292,13 +304,13 @@ func TestValidationEval(t *testing.T) {
 			}, {
 				Name:  "isProd",
 				Value: true,
-				Cost:  uint64ptr(2),
+				Cost:  uint64ptr(3),
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result: false,
-				Cost:   uint64ptr(350009),
+				Cost:   uint64ptr(350010),
 			}},
-			Cost: uint64ptr(350018),
+			Cost: uint64ptr(350020),
 		},
 	}, {
 		name:    "test a broken expression within variables, expression should fail with no audit annotation",
@@ -322,9 +334,9 @@ func TestValidationEval(t *testing.T) {
 			AuditAnnotations: []*k8s.EvalResult{{
 				Name:    strptr("foo-label"),
 				Message: "Label for foo is set to default",
-				Cost:    uint64ptr(2),
+				Cost:    uint64ptr(6),
 			}},
-			Cost: uint64ptr(8),
+			Cost: uint64ptr(12),
 		},
 	}, {
 		name:    "test optional.none() dereference",
@@ -349,7 +361,7 @@ func TestValidationEval(t *testing.T) {
 			}, {
 				Name:  "securityContexts",
 				Value: []any{nil},
-				Cost:  uint64ptr(15),
+				Cost:  uint64ptr(16),
 			}, {
 				Name: "namedSecurityContexts",
 				Value: []any{
@@ -357,27 +369,27 @@ func TestValidationEval(t *testing.T) {
 						"kubernetes-bootcamp": nil,
 					},
 				},
-				Cost: uint64ptr(47),
+				Cost: uint64ptr(48),
 			}},
 			Validations: []*k8s.EvalResult{{
 				Result:  false,
 				Message: "all containers must set runAsNonRoot to true",
-				Cost:    uint64ptr(8),
+				Cost:    uint64ptr(9),
 			}, {
 				Result:  false,
 				Message: "all containers must set readOnlyRootFilesystem to true",
-				Cost:    uint64ptr(8),
+				Cost:    uint64ptr(9),
 			}, {
 				Result: true,
-				Cost:   uint64ptr(8),
+				Cost:   uint64ptr(9),
 			}, {
 				Result: true,
-				Cost:   uint64ptr(8),
+				Cost:   uint64ptr(9),
 			}, {
 				Result: true,
-				Cost:   uint64ptr(8),
+				Cost:   uint64ptr(9),
 			}},
-			Cost: uint64ptr(107),
+			Cost: uint64ptr(114),
 		},
 	}, {
 		// The object is decoded the way a cluster decodes it. `eviction: on` is
@@ -438,6 +450,7 @@ func TestValidationCELLibraries(t *testing.T) {
 		expr string
 	}{
 		{"semver", `semver('1.2.3').minor() == 2`},
+		{"url", `url('https://example.com/?query=val').getQuery() == {'query': ['val']}`},
 		{"ip", `isIP('10.0.0.1') && ip('10.0.0.1').family() == 4`},
 		{"cidr", `isCIDR('10.0.0.0/8') && cidr('10.0.0.0/8').containsIP(ip('10.0.0.1'))`},
 		{"format", `format.named('dns1123Label').hasValue()`},
@@ -484,6 +497,65 @@ spec:
 			if v.Result != true {
 				t.Errorf("%s expression = %v, want true", tc.lib, v.Result)
 			}
+		})
+	}
+}
+
+// TestValidationTypeChecking covers the expressions the playground used to
+// accept and evaluate but a cluster rejects outright. The old env.Parse path
+// only caught syntax errors; the apiserver's compiler type-checks, so each of
+// these now surfaces in the result panel as a compilation error with no cost,
+// which is what the user would hit on `kubectl apply` of the policy.
+func TestValidationTypeChecking(t *testing.T) {
+	object := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"x"}}`
+	cases := []struct {
+		name string
+		expr string
+	}{
+		{"wrong argument type", `object.metadata.name.startsWith(1)`},
+		{"unknown function", `nosuchfunction(object)`},
+		{"not a boolean", `object.metadata.name`},
+		{"heterogeneous list literal", `[1, "a", 2].size() > 0`},
+		{"invalid regex literal", `"abc".matches("(")`},
+		{"invalid duration literal", `duration("xx")`},
+		{"invalid timestamp literal", `timestamp("not-a-time")`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: type-check
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["deployments"]
+  validations:
+    - expression: ` + strconv.Quote(tc.expr) + `
+`
+			out, err := k8s.EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte(object), nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Eval() error = %v", err)
+			}
+			var resp k8s.EvalResponse
+			if err := json.Unmarshal([]byte(out), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(resp.Validations) != 1 {
+				t.Fatalf("got %d validations, want 1: %s", len(resp.Validations), out)
+			}
+			v := resp.Validations[0]
+			if !v.IsError || v.Error == nil {
+				t.Fatalf("expression %q was accepted (result %v), want a compilation error", tc.expr, v.Result)
+			}
+			if v.Cost != nil {
+				t.Errorf("compilation error reported a cost of %d, want none", *v.Cost)
+			}
+			t.Logf("%s -> %s", tc.expr, *v.Error)
 		})
 	}
 }

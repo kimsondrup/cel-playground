@@ -16,103 +16,39 @@ package k8s
 
 import (
 	"encoding/json"
-	"fmt"
-
-	"github.com/google/cel-go/cel"
-	"github.com/google/cel-go/interpreter"
-	"gopkg.in/yaml.v3"
 )
 
+// EvalWebhook evaluates the matchConditions of every webhook in a
+// Validating/MutatingWebhookConfiguration through the apiserver's own CEL
+// compiler, so each condition is type-checked the way the apiserver checks it
+// when the configuration is created.
+//
+// Webhook matchConditions have no spec.variables, so `variables` is declared
+// but empty and any reference to it is a compilation error -- as on a cluster.
+// The available variables are 'object', 'oldObject', 'request', 'authorizer'
+// and 'authorizer.requestResource'.
 func EvalWebhook(webhookInput, oldObjectInput, objectValueInput, requestInput, authorizerInput []byte) (string, error) {
 	celInfo, err := extractCelInformation(webhookInput)
 	if err != nil {
 		return "", err
 	}
 
-	oldObjectValue, err := decodeObjectInput(oldObjectInput)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode input for the old object resource value: %w", err)
-	}
-
-	objectValue, err := decodeObjectInput(objectValueInput)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode input for the object resource value: %w", err)
-	}
-
-	request, err := deserializeRequest(requestInput)
+	inputs, err := newEvalInputs(oldObjectInput, objectValueInput, nil, requestInput, authorizerInput)
 	if err != nil {
 		return "", err
 	}
 
-	var authorizer Authorizer
-	if err := yaml.Unmarshal(authorizerInput, &authorizer); err != nil {
-		return "", fmt.Errorf("failed to decode input for the authorizer: %w", err)
-	}
-	initReceiver(&authorizer.receiverOnlyObjectVal, AuthorizerType)
-
-	authorizerRequestResource, err := getAuthorizerRequestResource(&authorizer, request)
+	evaluator, err := newCelEvaluator(inputs, nil)
 	if err != nil {
 		return "", err
-	}
-
-	matchConditionsCelVars := []cel.EnvOption{}
-	matchConditionsInputData := map[string]any{}
-
-	if objectValue != nil {
-		cleanMetaData(objectValue)
-		matchConditionsCelVars = updateVars("object", matchConditionsCelVars, matchConditionsInputData, objectValue)
-	}
-
-	if oldObjectValue != nil {
-		cleanMetaData(oldObjectValue)
-		matchConditionsCelVars = updateVars("oldObject", matchConditionsCelVars, matchConditionsInputData, oldObjectValue)
-	}
-
-	if request != nil {
-		matchConditionsCelVars = updateVars("request", matchConditionsCelVars, matchConditionsInputData, request)
-	}
-
-	if authorizerRequestResource != nil {
-		matchConditionsCelVars = updateVars("authorizer.requestResource", matchConditionsCelVars, matchConditionsInputData, authorizerRequestResource)
-	}
-
-	matchConditionsCelVars = updateVars("authorizer", matchConditionsCelVars, matchConditionsInputData, &authorizer)
-
-	// 'object' - The object from the incoming request. The value is null for DELETE requests.
-	// 'oldObject' - The existing object. The value is null for CREATE requests.
-	// 'request' - Attributes of the admission request(/pkg/apis/admission/types.go#AdmissionRequest).
-	// 'authorizer' - A CEL Authorizer. May be used to perform authorization checks for the principal (user or service account) of the request.
-	// 'authorizer.requestResource' - A CEL ResourceCheck constructed from the 'authorizer' and configured with the request resource.
-
-	matchConditionsEnvOptions := append([]cel.EnvOption{}, celEnvOptions...)
-	matchConditionsEnvOptions = append(matchConditionsEnvOptions, matchConditionsCelVars...)
-	matchConditionsEnv, err := cel.NewEnv(matchConditionsEnvOptions...)
-	if err != nil {
-		return "", fmt.Errorf("failed to create CEL env: %w", err)
-	}
-
-	matchConditionsExprActivations, err := interpreter.NewActivation(matchConditionsInputData)
-	if err != nil {
-		return "", fmt.Errorf("failed to create CEL activations: %w", err)
 	}
 
 	matchConditionsEvals := []evalResponses{}
 	for _, webhookMatchConditions := range celInfo.webhookMatchConditions {
-		matchConditionsEval := []*evalResponse{}
+		matchConditionsEval := evalResponses{}
 		for _, matchCondition := range webhookMatchConditions {
-			ast, issues := matchConditionsEnv.Parse(matchCondition.expression)
-			if issues.Err() != nil {
-				return "", fmt.Errorf("failed to parse expression %s: %w", matchCondition.expression, issues.Err())
-			}
-			var val *evalResponse
-			if prog, err := matchConditionsEnv.Program(ast, celProgramOptions...); err != nil {
-				val = newEvalResponseErr("parsing", matchCondition.expression, err)
-			} else if exprEval, details, err := prog.Eval(matchConditionsExprActivations); err != nil {
-				val = newEvalResponseErr("evaluating", matchCondition.expression, err)
-			} else {
-				val = newEvalResponse(matchCondition.name, exprEval, details, "", nil)
-			}
-			matchConditionsEval = append(matchConditionsEval, val)
+			matchConditionsEval = append(matchConditionsEval,
+				evaluator.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}))
 		}
 		matchConditionsEvals = append(matchConditionsEvals, matchConditionsEval)
 	}
