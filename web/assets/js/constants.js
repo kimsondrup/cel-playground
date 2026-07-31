@@ -16,6 +16,7 @@
 
 export const localStorageModeKey = "mode";
 export const localStorageThemeKey = "theme";
+export const localStorageWarningsOpenKey = "warningsOpen";
 export const ACE_EDITOR = {
   theme: {
     dark: "ace/theme/tomorrow_night",
