@@ -6,6 +6,70 @@
 CEL Playground is an interactive WebAssembly (Wasm) powered environment to explore and experiment with the [Common Expression Language (CEL)](https://github.com/google/cel-spec).
 It provides a simple and user-friendly interface to write and quickly evaluate CEL expressions.
 
+## Modes
+
+The playground evaluates several kinds of CEL input, selectable from the **Modes** button:
+
+- **CEL Expression** — a bare expression against an arbitrary input document.
+- **Validating Admission Policy** — a
+  [ValidatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/),
+  for seeing whether a request would be *allowed*: `matchConditions`,
+  `variables`, `validations` and `auditAnnotations`.
+- **Mutating Admission Policy** — a
+  [MutatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/)
+  (`admissionregistration.k8s.io/v1`, GA in Kubernetes 1.36; `v1beta1` and
+  `v1alpha1` documents are accepted too), for seeing how a request's object is
+  *mutated*:
+  `matchConditions`, `variables`, the object produced by each `spec.mutations`
+  entry for both the `ApplyConfiguration` and `JSONPatch` patch types, and a diff
+  against the object you started from.
+- **Web Hooks** — `matchConditions` on validating and mutating webhook
+  configurations.
+
+### What the Kubernetes modes do not simulate
+
+The playground evaluates expressions; it is not an apiserver. For the Mutating
+Admission Policy mode in particular:
+
+- `matchConstraints` are parsed but not evaluated. The mutations run against
+  whatever is in the Object tab, whether or not the `resourceRules` would select
+  it, so only `matchConditions` can stop one from running.
+- `params` / `paramKind` have no input tab, so nothing is bound to `params`. A
+  `matchCondition` or a variable reading it fails with `no such attribute(s)`,
+  even under `has()`. Inside a mutation `has(params...)` is simply false, where
+  a cluster would have found the object.
+- Authorizer checks ignore `fieldSelector()` and `labelSelector()`: the Authorizer
+  tab has no way to express a selector. In `matchConditions` and `variables` those
+  functions do not exist at all and the expression fails with `no such overload`;
+  inside a mutation they do exist, and the check is answered from the un-narrowed
+  entry, which is warned about in the result panel.
+- `reinvocationPolicy` changes nothing: each mutation runs exactly once.
+- `failurePolicy` changes nothing: there is no request to reject, so a failed
+  mutation is reported and the rest still run, where a cluster with the default
+  `Fail` would deny the whole request.
+- The object is used exactly as typed. A cluster applies API defaults before
+  admission runs and again after every mutation, so a `!has(...)` guard can look
+  like it fires here when it would not.
+- The matchConditions and the mutations are given the Request and Namespace tabs
+  by different routes: the matchConditions get them as typed, the mutations get
+  an admission attribute record built the way a cluster builds one, where a
+  missing name or namespace comes from the object and unset fields are absent
+  rather than empty. An expression can therefore answer differently depending on
+  which half of the policy it sits in. Filling both tabs in removes the
+  difference for everything except `has()` on a field that was never set, and
+  the result panel warns when an expression reads a tab that was left incomplete.
+- Merge semantics come from the schemas compiled into this binary, which cover
+  the built-in APIs only. Custom resources fall back to treating lists as atomic,
+  which is warned about in the result panel.
+
+Each run puts the limits on screen rather than leaving them only here. The ones
+that are properties of the policy document -- `matchConstraints`, `paramKind`,
+`reinvocationPolicy` and `failurePolicy` -- are repeated in a `notSimulated`
+section, along with API defaulting whenever the object has a schema compiled
+in. The ones that depend on the input, such as a narrowed authorizer check or a
+custom resource falling back to atomic lists, are reported as warnings
+alongside the result they affected.
+
 ## CEL libraries
 
 CEL Playground is built by compiling Go code to WebAssembly and includes the following libraries that are available in the environment:
@@ -16,7 +80,7 @@ CEL Playground is built by compiling Go code to WebAssembly and includes the fol
 - [Kubernetes URL library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-url-library)
 - [Kubernetes semver library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-semver-library)
 
-The Kubernetes policy modes (Validating Admission Policy and Web Hooks)
+The Kubernetes policy modes (Validating Admission Policy, Mutating Admission Policy and Web Hooks)
 additionally include the [IP](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-ip-library),
 [CIDR](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-cidr-library)
 and [format](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-format-library)
