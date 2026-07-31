@@ -347,7 +347,7 @@ func TestMutationEval(t *testing.T) {
 			patchType: "ApplyConfiguration",
 			contains:  []string{"replicaz: 3"},
 		}},
-		wantWarning: "Mutation 1 writes fields the schema for apps/v1 Deployment does not declare: .spec.replicaz",
+		wantWarning: "mutations[0] writes fields the schema for apps/v1 Deployment does not declare: .spec.replicaz",
 		wantDiff:    true,
 	}, {
 		// The lenient decoder the other modes share drops a misspelled policy
@@ -422,7 +422,7 @@ func TestMutationEval(t *testing.T) {
 				"playground/reason: un-narrowed",
 			},
 		}},
-		wantWarning: "Mutation 1 narrows an authorizer check with fieldSelector() or labelSelector()",
+		wantWarning: "mutations[0] narrows an authorizer check with fieldSelector() or labelSelector()",
 		// This policy leaves failurePolicy unset, which means Fail -- the
 		// setting whose effect the playground cannot reproduce -- so the caveat
 		// has to be there for it as much as for a policy that spells it out.
@@ -477,7 +477,7 @@ func TestMutationEval(t *testing.T) {
 			patchType: "ApplyConfiguration",
 			contains:  []string{"second: ran", "replicaz: 3"},
 		}},
-		wantWarning:   "Mutation 1",
+		wantWarning:   "mutations[0]",
 		finalContains: []string{"second: ran"},
 		wantDiff:      true,
 	}, {
@@ -492,7 +492,7 @@ func TestMutationEval(t *testing.T) {
 			patchType: "JSONPatch",
 			contains:  []string{`replicas: "10"`},
 		}},
-		wantWarning: "Mutation 1 writes a value the schema for apps/v1 Deployment does not " +
+		wantWarning: "mutations[0] writes a value the schema for apps/v1 Deployment does not " +
 			"accept: .spec.replicas: expected numeric (int or float), got string",
 		wantDiff: true,
 	}, {
@@ -1155,7 +1155,7 @@ spec:
 		t.Fatal("total cost is absent")
 	}
 	if *response.Cost != want {
-		t.Errorf("total cost = %d, want %d -- the sum of every cost the panel shows",
-			*response.Cost, want)
+		t.Errorf("total cost = %d, want %d -- the matchConditions, the variable they read, "+
+			"and the mutation", *response.Cost, want)
 	}
 }

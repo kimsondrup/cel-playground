@@ -253,7 +253,7 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 			}
 		}
 
-		run, err := evalMutations(policy, objectValueInput, oldObjectInput, requestInput, namespaceInput, &authorizer)
+		run, err := evalMutations(policy, oldObjectInput, objectValueInput, namespaceInput, requestInput, &authorizer)
 		switch {
 		case errors.Is(err, errNoObject), errors.Is(err, errNoObjectGVK):
 			// Report this against each mutation rather than failing the whole
@@ -282,6 +282,11 @@ func EvalMutatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, 
 	// object -- the display-side evaluation is the only thing that ran, and
 	// charging nothing for it would report a cost of zero for work the panel
 	// shows.
+	//
+	// One case falls between the two: a policy where one mutation evaluated and
+	// another did not, where the variables only the failed one reads were
+	// evaluated for display and are charged to nobody. The panel then shows a
+	// cost the total does not include.
 	cost := calculateEvalResponsesCost(matchConditionsEvals)
 	if mutationCost > 0 {
 		cost += mutationCost + matchConditionVariableCost
@@ -627,7 +632,10 @@ type mutationRun struct {
 
 // evalMutations compiles and applies spec.mutations in order, threading the
 // object produced by each mutation into the next one.
-func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, objectInput, oldObjectInput, requestInput, namespaceInput []byte, authorizer *Authorizer) (*mutationRun, error) {
+// evalMutations takes its inputs in the order EvalMutatingAdmissionPolicy does.
+// They are six []byte, so a signature that disagreed about the order would swap
+// the object with the old object silently, and still compile.
+func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, oldObjectInput, objectInput, namespaceInput, requestInput []byte, authorizer *Authorizer) (*mutationRun, error) {
 	object, err := decodeUnstructured(objectInput)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode input for the new resource value: %w", err)
@@ -794,7 +802,8 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 		// Lets the authorizer adapter attribute a selector-narrowed check to the
 		// mutation that asked it, whichever of the paths below the mutation
 		// leaves by.
-		authorizerAdapter.mutation = len(results)
+		// 0-based, matching how the result panel labels the mutations.
+		authorizerAdapter.mutation = len(results) - 1
 
 		evaluator, patcher, err := compileMutation(compiler, mutation, patchDeclarations)
 		if err != nil {
@@ -851,20 +860,20 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 		undeclared, more := undeclaredFields(gvk, patched)
 		if added := without(undeclared, objectUndeclared); len(added) > 0 {
 			warnings = append(warnings, fmt.Sprintf(
-				"Mutation %d writes fields the schema for %s does not declare: %s%s. The "+
+				"mutations[%d] writes fields the schema for %s does not declare: %s%s. The "+
 					"playground's schema is only as new as the client-go it was built against, "+
 					"so a field from a newer Kubernetes would be applied by a cluster -- but a "+
 					"misspelled one would be rejected rather than applied, and a mutation "+
 					"expression has no compile-time field checking to catch that.",
-				len(results), gvk.GroupVersion().String()+" "+gvk.Kind,
+				len(results)-1, gvk.GroupVersion().String()+" "+gvk.Kind,
 				strings.Join(added, ", "), andPossiblyMore(more)))
 		}
 		if rejected := without(rejectedValues(gvk, patched), objectRejected); len(rejected) > 0 {
 			warnings = append(warnings, fmt.Sprintf(
-				"Mutation %d writes a value the schema for %s does not accept: %s. A cluster "+
+				"mutations[%d] writes a value the schema for %s does not accept: %s. A cluster "+
 					"decodes a patched object strictly and would reject this rather than apply "+
 					"it -- a quoted number is the usual cause.",
-				len(results), gvk.GroupVersion().String()+" "+gvk.Kind, strings.Join(rejected, ", ")))
+				len(results)-1, gvk.GroupVersion().String()+" "+gvk.Kind, strings.Join(rejected, ", ")))
 		}
 		objectRejected = rejectedValues(gvk, patched)
 
@@ -891,7 +900,7 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 	// which mutation to distrust is the useful part.
 	for _, narrowed := range authorizerAdapter.narrowedMutations {
 		warnings = append(warnings, fmt.Sprintf(
-			"Mutation %d narrows an authorizer check with fieldSelector() or labelSelector(). "+
+			"mutations[%d] narrows an authorizer check with fieldSelector() or labelSelector(). "+
 				"The Authorizer tab has no way to express a selector, so the check was answered "+
 				"from the un-narrowed entry rather than refused -- a cluster that grants the verb "+
 				"only for some selectors would answer differently, so do not trust that decision.",
@@ -903,10 +912,13 @@ func evalMutations(policy *admissionregistrationv1.MutatingAdmissionPolicy, obje
 	// playground has nothing to reject, so it shows the partial result -- which
 	// looks like a success unless it says otherwise.
 	if failed := firstFailedMutation(results); failed > 0 && !ignoresFailures(policy) {
+		rest := ""
+		if len(results) > 1 {
+			rest = " The rest still ran so their output is visible."
+		}
 		warnings = append(warnings, fmt.Sprintf(
-			"Mutation %d failed. The rest still ran so their output is visible, but this policy "+
-				"does not set failurePolicy: Ignore, so a cluster would have denied the request "+
-				"instead of applying anything.", failed))
+			"mutations[%d] failed.%s This policy does not set failurePolicy: Ignore, so a cluster "+
+				"would have denied the request instead of applying anything.", failed-1, rest))
 	}
 
 	run := &mutationRun{

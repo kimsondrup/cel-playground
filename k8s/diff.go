@@ -16,14 +16,29 @@ package k8s
 
 import "github.com/aymanbagabas/go-udiff"
 
-// unifiedDiff renders a unified diff of two YAML documents, with the usual
-// three lines of context. It returns an empty string when the documents are
-// identical.
+// diffContextLines is how many unchanged lines are shown around each change.
+//
+// More than a source diff shows, because a YAML object gives a line almost no
+// context of its own: three lines above `cpu: "2"` is still inside the same
+// resources block, and the container it belongs to is further up than that.
+const diffContextLines = 8
+
+// unifiedDiff renders a unified diff of two YAML documents. It returns an empty
+// string when the documents are identical.
 //
 // go-udiff is the diff gopls uses, ported out of x/tools. It matters here that
 // it is Myers rather than a full LCS table: the playground diffs an object
 // against its mutated self, and two edits at opposite ends of a large object
 // are cheap for Myers and quadratic in the distance between them for a table.
 func unifiedDiff(from, to, fromLabel, toLabel string) string {
-	return udiff.Unified(fromLabel, toLabel, from, to)
+	// Lines, not Strings: line-granularity edits, so a changed line is one
+	// removal and one addition rather than an edit within the line.
+	edits := udiff.Lines(from, to)
+	rendered, err := udiff.ToUnified(fromLabel, toLabel, from, edits, diffContextLines)
+	if err != nil {
+		// Only returned for edits that do not apply to the content they were
+		// computed from, which cannot happen when both come from here.
+		return ""
+	}
+	return rendered
 }

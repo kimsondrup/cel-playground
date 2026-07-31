@@ -114,8 +114,18 @@ func splitLines(s string) []string {
 // TestUnifiedDiffHunkCountsMatchBody guards the @@ headers against drifting out
 // of sync with the lines that follow them.
 func TestUnifiedDiffHunkCountsMatchBody(t *testing.T) {
-	from := "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15\n"
-	to := "l1\nCHANGED\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nCHANGED15\n"
+	// Far enough apart to stay two hunks: the gap has to exceed twice the
+	// context, or the two runs of context meet and the hunks merge.
+	const documentLines = 40
+	document := make([]string, documentLines)
+	for i := range document {
+		document[i] = fmt.Sprintf("l%d", i+1)
+	}
+	from := strings.Join(document, "\n") + "\n"
+	edited := append([]string{}, document...)
+	edited[1] = "CHANGED"
+	edited[documentLines-2] = "CHANGED-NEAR-THE-END"
+	to := strings.Join(edited, "\n") + "\n"
 
 	got := unifiedDiff(from, to, "object", "mutated")
 	if got == "" {
@@ -432,11 +442,12 @@ func TestUnifiedDiffFarApartEdits(t *testing.T) {
 		}
 	}
 
-	// Two hunks of seven lines -- a hunk header, the removed and added line,
-	// three lines of context on the inward side and the one line that exists
-	// on the outward side -- plus the two file headers. Anything much larger
-	// means the whole document is being reported rather than what changed.
-	if want := 16; strings.Count(got, "\n") != want {
+	// Two hunks of twelve lines -- a hunk header, the removed and added line,
+	// diffContextLines of context on the inward side and the one line that
+	// exists on the outward side -- plus the two file headers. Anything much
+	// larger means the whole document is being reported rather than what
+	// changed.
+	if want := 2*(1+1+2+diffContextLines) + 2; strings.Count(got, "\n") != want {
 		t.Errorf("diff has %d lines, want %d:\n%s", strings.Count(got, "\n"), want, got)
 	}
 }
@@ -469,9 +480,9 @@ func TestUnifiedDiffLargeDocument(t *testing.T) {
 		t.Errorf("unifiedDiff allocated %d bytes for a one-line insertion, want at most %d", allocated, maxAlloc)
 	}
 
-	// One insertion, three lines of context either side, plus the two file
-	// headers and the hunk header.
-	if want := 10; strings.Count(got, "\n") != want {
+	// One insertion, diffContextLines either side, plus the two file headers
+	// and the hunk header.
+	if want := 1 + 2*diffContextLines + 3; strings.Count(got, "\n") != want {
 		t.Errorf("diff has %d lines, want %d:\n%s", strings.Count(got, "\n"), want, got)
 	}
 	if !strings.Contains(got, "+  - name: INSERTED") {
@@ -481,7 +492,7 @@ func TestUnifiedDiffLargeDocument(t *testing.T) {
 		t.Errorf("diff reports deletions for an insertion-only change:\n%s", got)
 	}
 	// The hunk must be located at the insertion point, not at line 1.
-	if want := fmt.Sprintf("@@ -%d,", lines/2-2); !strings.Contains(got, want) {
+	if want := fmt.Sprintf("@@ -%d,", lines/2-diffContextLines+1); !strings.Contains(got, want) {
 		t.Errorf("diff hunk header is not at the insertion point, want %q:\n%s", want, got)
 	}
 }
