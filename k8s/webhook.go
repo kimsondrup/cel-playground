@@ -23,10 +23,12 @@ import (
 // compiler, so each condition is type-checked the way the apiserver checks it
 // when the configuration is created.
 //
-// Webhook matchConditions have no spec.variables, so `variables` is declared
-// but empty and any reference to it is a compilation error -- as on a cluster.
-// The available variables are 'object', 'oldObject', 'request', 'authorizer'
-// and 'authorizer.requestResource'.
+// A webhook has no spec.variables, and the apiserver compiles its
+// matchConditions with a plain ConditionCompiler rather than the composited one
+// a policy gets, so `variables` is not declared at all and naming it does not
+// compile. The available variables are 'object', 'oldObject', 'request',
+// 'authorizer' and 'authorizer.requestResource'; 'namespaceObject' is declared
+// but left null, because the matcher passes no namespace.
 func EvalWebhook(webhookInput, oldObjectInput, objectValueInput, requestInput, authorizerInput []byte) (string, error) {
 	celInfo, err := extractCelInformation(webhookInput)
 	if err != nil {
@@ -38,24 +40,19 @@ func EvalWebhook(webhookInput, oldObjectInput, objectValueInput, requestInput, a
 		return "", err
 	}
 
-	evaluator, err := newCelEvaluator(inputs, nil)
-	if err != nil {
-		return "", err
-	}
+	scope := newMatchConditionScope(inputs)
 
-	matchConditionsEvals := []evalResponses{}
+	sections := evalSections{}
 	for _, webhookMatchConditions := range celInfo.webhookMatchConditions {
 		matchConditionsEval := evalResponses{}
 		for _, matchCondition := range webhookMatchConditions {
 			matchConditionsEval = append(matchConditionsEval,
-				evaluator.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}))
+				scope.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}, declsWithAuthorizer))
 		}
-		matchConditionsEvals = append(matchConditionsEvals, matchConditionsEval)
+		sections.webhookMatchConditions = append(sections.webhookMatchConditions, matchConditionsEval)
 	}
 
-	response := generateEvalResponse(nil, nil, nil, nil, nil, nil, nil, matchConditionsEvals)
-
-	out, err := json.Marshal(response)
+	out, err := json.Marshal(sections.response())
 	if err != nil {
 		return "", err
 	}

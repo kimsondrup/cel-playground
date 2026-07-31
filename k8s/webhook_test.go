@@ -82,6 +82,9 @@ func TestWebhookEval(t *testing.T) {
 			Cost: uint64ptr(11),
 		},
 	}, {
+		// The RBAC tab grants the requesting user "breakglass" on this very
+		// webhook configuration, so the check is allowed and the negated match
+		// condition is false: the webhook would be skipped for this request.
 		name:       "test a single webhook, match conditions will rely on authorizer information",
 		webhook:    "webhook4.yaml",
 		updated:    "updated4.yaml",
@@ -89,7 +92,7 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "authorizer4.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{{
-				{Name: strptr("breakglass"), Result: true, Cost: uint64ptr(350006)},
+				{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(350006)},
 			}},
 			Cost: uint64ptr(350006),
 		},

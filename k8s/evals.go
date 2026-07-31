@@ -22,6 +22,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/undistro/cel-playground/utils"
+	celconfig "k8s.io/apiserver/pkg/apis/cel"
 )
 
 type evalResponseError struct {
@@ -29,7 +30,11 @@ type evalResponseError struct {
 	cause error
 }
 
-func newEvalResponseErr(operation, expression string, err error) *evalResponse {
+// newEvalResponseErr reports an expression that ran and failed. It carries the
+// cost of the attempt: cel-go accounts for the work done before the failure and
+// the apiserver charges that against the request's budget, so an erroring
+// expression is not free.
+func newEvalResponseErr(name, operation, expression string, err error, details *cel.EvalDetails) *evalResponse {
 	underlying := err
 	if celErr, ok := err.(*types.Err); ok {
 		underlying = celErr.Unwrap()
@@ -41,11 +46,15 @@ func newEvalResponseErr(operation, expression string, err error) *evalResponse {
 	var evalErr *evalResponseError
 	if errors.As(underlying, &evalErr) {
 		return &evalResponse{
-			val: types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression '%s', caused by nested exception: '%s'", operation, expression, evalErr.cause), evalErr.cause}),
+			name: name,
+			cost: getCost(details),
+			val:  types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression '%s', caused by nested exception: '%s'", operation, expression, evalErr.cause), evalErr.cause}),
 		}
 	}
 	return &evalResponse{
-		val: types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression %s: %s", operation, expression, underlying), underlying}),
+		name: name,
+		cost: getCost(details),
+		val:  types.WrapErr(&evalResponseError{fmt.Errorf("unexpected error %s expression %s: %s", operation, expression, underlying), underlying}),
 	}
 }
 
@@ -80,20 +89,13 @@ func (r *evalResponse) isError() bool {
 	return ok
 }
 
-// addCost folds a second expression's cost into this response. A validation
-// whose messageExpression also ran is charged for both, the way the apiserver
-// charges both against the request's cost budget.
-func (r *evalResponse) addCost(cost *uint64) {
-	if cost == nil {
-		return
+// stringValue returns the expression's result when it is a string.
+func (r *evalResponse) stringValue() (string, bool) {
+	if r == nil || r.isError() || r.val == nil {
+		return "", false
 	}
-	if r.cost == nil {
-		total := *cost
-		r.cost = &total
-		return
-	}
-	total := *r.cost + *cost
-	r.cost = &total
+	value, ok := r.val.Value().(string)
+	return value, ok
 }
 
 // evalResults holds the lazily evaluated variables of one scope, keyed by name.
@@ -117,14 +119,23 @@ type EvalResult struct {
 	Message any     `json:"message,omitempty"`
 }
 
+// EvalResponse is the whole result panel. Each variable list belongs to one of
+// the batches the apiserver evaluates a policy in; a variable read from two
+// batches appears in two lists because a cluster evaluates, and charges for, it
+// twice.
 type EvalResponse struct {
-	MatchConditionsVariables []*EvalVariable `json:"matchConditionVariables,omitempty"`
-	MatchConditions          []*EvalResult   `json:"matchConditions,omitempty"`
-	ValidationVariables      []*EvalVariable `json:"validationVariables,omitempty"`
-	Validations              []*EvalResult   `json:"validations,omitempty"`
-	AuditAnnotations         []*EvalResult   `json:"auditAnnotations,omitempty"`
-	WebhookMatchConditions   [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
-	Cost                     *uint64         `json:"cost,omitempty"`
+	MatchConditions            []*EvalResult   `json:"matchConditions,omitempty"`
+	ValidationVariables        []*EvalVariable `json:"validationVariables,omitempty"`
+	Validations                []*EvalResult   `json:"validations,omitempty"`
+	MessageExpressionVariables []*EvalVariable `json:"messageExpressionVariables,omitempty"`
+	MessageExpressions         []*EvalResult   `json:"messageExpressions,omitempty"`
+	AuditAnnotationVariables   []*EvalVariable `json:"auditAnnotationVariables,omitempty"`
+	AuditAnnotations           []*EvalResult   `json:"auditAnnotations,omitempty"`
+	WebhookMatchConditions     [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
+	// ExceededBudgets names the cost budgets this evaluation ran past, and is
+	// absent when it ran past none.
+	ExceededBudgets []*EvalResult `json:"exceededBudgets,omitempty"`
+	Cost            *uint64       `json:"cost,omitempty"`
 }
 
 func getResults(val ref.Val) (any, *string) {
@@ -152,10 +163,13 @@ func getCost(details *cel.EvalDetails) *uint64 {
 	return details.ActualCost()
 }
 
-func generateEvalVariables(names []string, results evalResults) []*EvalVariable {
+func generateEvalVariables(scope *evalScope) []*EvalVariable {
+	if scope == nil {
+		return nil
+	}
 	variables := []*EvalVariable{}
-	for _, name := range names {
-		if result, ok := results[name]; ok && result != nil {
+	for _, name := range scope.variableNames {
+		if result, ok := scope.variableResults[name]; ok && result != nil {
 			value, err := getResults(result.val)
 			variables = append(variables, &EvalVariable{
 				Name:    name,
@@ -172,6 +186,13 @@ func generateEvalVariables(names []string, results evalResults) []*EvalVariable 
 func generateEvalResults(responses evalResponses) []*EvalResult {
 	evals := []*EvalResult{}
 	for _, eval := range responses {
+		// A nil entry keeps a section index-aligned with the one it annotates:
+		// messageExpressions has a slot per validation, empty where the
+		// validation declares no messageExpression.
+		if eval == nil {
+			evals = append(evals, &EvalResult{})
+			continue
+		}
 		value, err := getResults(eval.val)
 		var message any
 		if eval.messageVal != nil {
@@ -204,9 +225,12 @@ func generateEvalArrayResults(responses []evalResponses) [][]*EvalResult {
 	return evalsArray
 }
 
-func calculateVariablesCost(results evalResults) uint64 {
+func calculateVariablesCost(scope *evalScope) uint64 {
+	if scope == nil {
+		return 0
+	}
 	var cost uint64
-	for _, result := range results {
+	for _, result := range scope.variableResults {
 		if result != nil && result.cost != nil {
 			cost += *result.cost
 		}
@@ -217,7 +241,7 @@ func calculateVariablesCost(results evalResults) uint64 {
 func calculateEvalResponsesCost(evals evalResponses) uint64 {
 	var cost uint64
 	for _, eval := range evals {
-		if eval.cost != nil {
+		if eval != nil && eval.cost != nil {
 			cost += *eval.cost
 		}
 	}
@@ -232,24 +256,84 @@ func calculateEvalResponsesArrayCost(evalsArray []evalResponses) uint64 {
 	return cost
 }
 
-func generateEvalResponse(matchConditionsVariableNames []string, matchConditionsVariables evalResults, matchConditionsEvals evalResponses,
-	validationVariableNames []string, validationVariables evalResults, validationEvals evalResponses,
-	auditAnnotationEvals evalResponses, webhookMatchConditionsEvals []evalResponses) *EvalResponse {
+// evalSections is one evaluation's worth of results, one entry per batch the
+// apiserver would evaluate. A nil scope is a batch the mode does not have.
+type evalSections struct {
+	matchConditionScope *evalScope
+	matchConditions     evalResponses
 
-	cost := calculateVariablesCost(matchConditionsVariables)
-	cost += calculateEvalResponsesCost(matchConditionsEvals)
-	cost += calculateVariablesCost(validationVariables)
-	cost += calculateEvalResponsesCost(validationEvals)
-	cost += calculateEvalResponsesCost(auditAnnotationEvals)
-	cost += calculateEvalResponsesArrayCost(webhookMatchConditionsEvals)
+	validationScope *evalScope
+	validations     evalResponses
+
+	messageScope       *evalScope
+	messageExpressions evalResponses
+
+	auditAnnotationScope *evalScope
+	auditAnnotations     evalResponses
+
+	webhookMatchConditions []evalResponses
+}
+
+// chainCosts is what each of the apiserver's cost budgets is checked against.
+// There is no single pot: matchConditions have their own, the validations and
+// the messageExpressions share one, and the audit annotations start again from
+// a full one.
+func (s *evalSections) chainCosts() (matchConditions, validations, auditAnnotations uint64) {
+	matchConditions = calculateVariablesCost(s.matchConditionScope) +
+		calculateEvalResponsesCost(s.matchConditions) +
+		calculateEvalResponsesArrayCost(s.webhookMatchConditions)
+	validations = calculateVariablesCost(s.validationScope) +
+		calculateEvalResponsesCost(s.validations) +
+		calculateVariablesCost(s.messageScope) +
+		calculateEvalResponsesCost(s.messageExpressions)
+	auditAnnotations = calculateVariablesCost(s.auditAnnotationScope) +
+		calculateEvalResponsesCost(s.auditAnnotations)
+	return matchConditions, validations, auditAnnotations
+}
+
+// exceededBudgets reports the chains that ran past the budget the apiserver
+// checks them against. A cluster abandons the rest of a chain at that point and
+// fails the request; the playground keeps evaluating, so that the expression
+// that overran is still visible, and says so here instead.
+func (s *evalSections) exceededBudgets() []*EvalResult {
+	matchConditions, validations, auditAnnotations := s.chainCosts()
+	var exceeded []*EvalResult
+	report := func(name string, cost uint64, budget uint64) {
+		if cost <= budget {
+			return
+		}
+		message := fmt.Sprintf("%d, over the %d the apiserver allows; a cluster would abandon the rest and fail the request", cost, budget)
+		exceeded = append(exceeded, &EvalResult{
+			Name:    &name,
+			Cost:    &cost,
+			IsError: true,
+			Error:   &message,
+		})
+	}
+	report("matchConditions", matchConditions, celconfig.RuntimeCELCostBudgetMatchConditions)
+	report("validations and messageExpressions", validations, celconfig.RuntimeCELCostBudget)
+	report("auditAnnotations", auditAnnotations, celconfig.RuntimeCELCostBudget)
+	return exceeded
+}
+
+// response totals the cost the way the apiserver charges it: every expression
+// that ran, plus every variable evaluation each batch triggered. The total is
+// not itself checked against anything -- see exceededBudgets for the budgets
+// that are.
+func (s *evalSections) response() *EvalResponse {
+	matchConditions, validations, auditAnnotations := s.chainCosts()
+	cost := matchConditions + validations + auditAnnotations
 
 	return &EvalResponse{
-		MatchConditionsVariables: generateEvalVariables(matchConditionsVariableNames, matchConditionsVariables),
-		MatchConditions:          generateEvalResults(matchConditionsEvals),
-		ValidationVariables:      generateEvalVariables(validationVariableNames, validationVariables),
-		Validations:              generateEvalResults(validationEvals),
-		AuditAnnotations:         generateEvalResults(auditAnnotationEvals),
-		WebhookMatchConditions:   generateEvalArrayResults(webhookMatchConditionsEvals),
-		Cost:                     &cost,
+		MatchConditions:            generateEvalResults(s.matchConditions),
+		ValidationVariables:        generateEvalVariables(s.validationScope),
+		Validations:                generateEvalResults(s.validations),
+		MessageExpressionVariables: generateEvalVariables(s.messageScope),
+		MessageExpressions:         generateEvalResults(s.messageExpressions),
+		AuditAnnotationVariables:   generateEvalVariables(s.auditAnnotationScope),
+		AuditAnnotations:           generateEvalResults(s.auditAnnotations),
+		WebhookMatchConditions:     generateEvalArrayResults(s.webhookMatchConditions),
+		ExceededBudgets:            s.exceededBudgets(),
+		Cost:                       &cost,
 	}
 }

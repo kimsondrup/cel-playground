@@ -77,7 +77,10 @@ func TestValidationEval(t *testing.T) {
 			Cost:        uint64ptr(4),
 		},
 	}, {
-		name:    "test an expression with variables, expression should fail with no audit annotation",
+		// The audit annotation runs even though the validation failed, and it
+		// dereferences `foo` again, so the variable is evaluated -- and charged
+		// -- once per batch, as it is on a cluster.
+		name:    "test an expression with variables that fails, with an audit annotation",
 		policy:  "variable1 policy.yaml",
 		orig:    "",
 		updated: "variable1 updated.yaml",
@@ -87,8 +90,22 @@ func TestValidationEval(t *testing.T) {
 				Value: "default",
 				Cost:  uint64ptr(6),
 			}},
-			Validations: []*k8s.EvalResult{{Result: false, Cost: uint64ptr(3)}},
-			Cost:        uint64ptr(9),
+			Validations: []*k8s.EvalResult{{
+				Result:  false,
+				Cost:    uint64ptr(3),
+				Message: "failed expression: variables.foo == 'bar'",
+			}},
+			AuditAnnotationVariables: []*k8s.EvalVariable{{
+				Name:  "foo",
+				Value: "default",
+				Cost:  uint64ptr(6),
+			}},
+			AuditAnnotations: []*k8s.EvalResult{{
+				Name:    strptr("foo-label"),
+				Message: "Label for foo is set to default",
+				Cost:    uint64ptr(6),
+			}},
+			Cost: uint64ptr(21),
 		},
 	}, {
 		name:    "test an expression with variables, expression should succeed with audit annotation",
@@ -105,12 +122,17 @@ func TestValidationEval(t *testing.T) {
 				Result: true,
 				Cost:   uint64ptr(3),
 			}},
+			AuditAnnotationVariables: []*k8s.EvalVariable{{
+				Name:  "foo",
+				Value: "bar",
+				Cost:  uint64ptr(11),
+			}},
 			AuditAnnotations: []*k8s.EvalResult{{
 				Name:    strptr("foo-label"),
 				Message: "Label for foo is set to bar",
 				Cost:    uint64ptr(5),
 			}},
-			Cost: uint64ptr(19),
+			Cost: uint64ptr(30),
 		},
 	}, {
 		name:    "test an expression with variables evaluating to a map, expression should succeed",
@@ -148,13 +170,17 @@ func TestValidationEval(t *testing.T) {
 					" | 'foo' in object.spec.template.metadata.labels ? url(object.spec.template.metadata.labels['foo']).getQuery() : null\n" +
 					" | ..............................................^"),
 			}},
+			// The variable never compiled, so it costs nothing, but the
+			// validation that dereferenced it did run and is charged for the
+			// work it did before the error surfaced.
 			Validations: []*k8s.EvalResult{{
 				IsError: true,
+				Cost:    uint64ptr(3),
 				Error: strptr("unexpected error evaluating expression 'variables.foo != null', caused by nested exception: 'foo: compilation failed: ERROR: <input>:1:47: found no matching overload for '_?_:_' applied to '(bool, map(string, list(string)), null)'\n" +
 					" | 'foo' in object.spec.template.metadata.labels ? url(object.spec.template.metadata.labels['foo']).getQuery() : null\n" +
 					" | ..............................................^'"),
 			}},
-			Cost: uint64ptr(0),
+			Cost: uint64ptr(3),
 		},
 	}, {
 		name:    "test valid matchConditions, should see validations and auditAnnotations",
@@ -181,27 +207,28 @@ func TestValidationEval(t *testing.T) {
 			Cost: uint64ptr(36),
 		},
 	}, {
-		name:    "test invalid matchConditions, should not see validations and auditAnnotations",
+		// This policy could not be created on a cluster: a matchCondition may
+		// not read spec.variables, and the apiserver rejects it with the same
+		// compilation error reported here. The second condition still
+		// evaluates, to false, so the validations are skipped either way.
+		name:    "test a matchCondition that reads a variable, which no cluster accepts",
 		policy:  "match2 policy.yaml",
 		orig:    "",
 		updated: "match2 updated.yaml",
 		request: "match2 request.yaml",
 		expected: k8s.EvalResponse{
-			MatchConditionsVariables: []*k8s.EvalVariable{{
-				Name:  "isLease",
-				Value: false,
-				Cost:  uint64ptr(4),
-			}},
 			MatchConditions: []*k8s.EvalResult{{
-				Name:   strptr("exclude-leases"),
-				Result: true,
-				Cost:   uint64ptr(3),
+				Name:    strptr("exclude-leases"),
+				IsError: true,
+				Error: strptr("exclude-leases: compilation failed: ERROR: <input>:1:2: undeclared reference to 'variables' (in container '')\n" +
+					" | !variables.isLease\n" +
+					" | .^"),
 			}, {
 				Name:   strptr("exclude-kubelet-requests"),
 				Result: false,
 				Cost:   uint64ptr(5),
 			}},
-			Cost: uint64ptr(12),
+			Cost: uint64ptr(5),
 		},
 	}, {
 		name:      "test an expression using namespace attributes",
@@ -249,7 +276,19 @@ func TestValidationEval(t *testing.T) {
 				Result: true,
 				Cost:   uint64ptr(20),
 			}},
-			Cost: uint64ptr(73),
+			// The messageExpression is evaluated even though the validation
+			// passed and its result is never read, because a cluster evaluates
+			// the whole batch before it looks at any decision.
+			MessageExpressionVariables: []*k8s.EvalVariable{{
+				Name:  "environment",
+				Value: "prod",
+				Cost:  uint64ptr(7),
+			}},
+			MessageExpressions: []*k8s.EvalResult{{
+				Result: "only prod images are allowed in namespace default",
+				Cost:   uint64ptr(16),
+			}},
+			Cost: uint64ptr(96),
 		},
 	}, {
 		name:    "test an expression using request attributes",
@@ -267,6 +306,7 @@ func TestValidationEval(t *testing.T) {
 		orig:       "",
 		updated:    "authorizer1 updated.yaml",
 		namespace:  "authorizer1 namespace.yaml",
+		request:    "authorizer1 request.yaml",
 		authorizer: "authorizer1 authorizer.yaml",
 		expected: k8s.EvalResponse{
 			ValidationVariables: []*k8s.EvalVariable{{
@@ -295,6 +335,7 @@ func TestValidationEval(t *testing.T) {
 		orig:       "",
 		updated:    "authorizer2 updated.yaml",
 		namespace:  "authorizer2 namespace.yaml",
+		request:    "authorizer2 request.yaml",
 		authorizer: "authorizer2 authorizer.yaml",
 		expected: k8s.EvalResponse{
 			ValidationVariables: []*k8s.EvalVariable{{
@@ -307,13 +348,19 @@ func TestValidationEval(t *testing.T) {
 				Cost:  uint64ptr(3),
 			}},
 			Validations: []*k8s.EvalResult{{
-				Result: false,
-				Cost:   uint64ptr(350010),
+				Result:  false,
+				Cost:    uint64ptr(350010),
+				Message: "failed expression: variables.isProd && authorizer.group(\"apps\").resource(\"deployments\").namespace(object.metadata.namespace).check(\"admin\").allowed()",
 			}},
-			Cost: uint64ptr(350020),
+			AuditAnnotations: []*k8s.EvalResult{{
+				Name:    strptr("test-annotation"),
+				Message: "Deployment is allowed in namespace default",
+				Cost:    uint64ptr(8),
+			}},
+			Cost: uint64ptr(350028),
 		},
 	}, {
-		name:    "test a broken expression within variables, expression should fail with no audit annotation",
+		name:    "test a broken expression within variables, expression should fail",
 		policy:  "broken1 policy.yaml",
 		orig:    "",
 		updated: "broken1 updated.yaml",
@@ -325,18 +372,25 @@ func TestValidationEval(t *testing.T) {
 			}, {
 				Name:    "containers",
 				IsError: true,
+				Cost:    uint64ptr(4),
 				Error:   strptr("unexpected error evaluating expression containers: no such key: spc"),
 			}},
 			Validations: []*k8s.EvalResult{{
 				IsError: true,
+				Cost:    uint64ptr(5),
 				Error:   strptr("unexpected error evaluating expression 'variables.foo == 'default' && variables.containers.all(c, c.image.startsWith(\"test\"))', caused by nested exception: 'no such key: spc'"),
+			}},
+			AuditAnnotationVariables: []*k8s.EvalVariable{{
+				Name:  "foo",
+				Value: "default",
+				Cost:  uint64ptr(6),
 			}},
 			AuditAnnotations: []*k8s.EvalResult{{
 				Name:    strptr("foo-label"),
 				Message: "Label for foo is set to default",
 				Cost:    uint64ptr(6),
 			}},
-			Cost: uint64ptr(12),
+			Cost: uint64ptr(27),
 		},
 	}, {
 		name:    "test optional.none() dereference",

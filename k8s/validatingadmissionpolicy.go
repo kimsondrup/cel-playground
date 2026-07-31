@@ -16,6 +16,10 @@ package k8s
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
+
+	celconfig "k8s.io/apiserver/pkg/apis/cel"
 )
 
 // EvalValidatingAdmissionPolicy evaluates a ValidatingAdmissionPolicy against
@@ -31,20 +35,29 @@ import (
 //	'params'          - not exposed yet; the playground has no params tab.
 //	'namespaceObject' - the namespace of the incoming object; null when cluster-scoped.
 //	'variables'       - spec.variables, lazily evaluated, e.g. variables.foo.
-//	'authorizer'      - a CEL Authorizer backed by the authorizer tab.
+//	'authorizer'      - a CEL Authorizer backed by the RBAC tab.
 //	'authorizer.requestResource' - the same authorizer preconfigured with the request resource.
 //
-// The matchCondition semantics are unchanged:
-//  1. If ANY matchCondition evaluates to FALSE, the policy is skipped.
-//  2. If ALL matchConditions evaluate to TRUE, the policy is evaluated.
-//  3. If any matchCondition evaluates to an error (but none are FALSE):
-//     - if failurePolicy=Fail, the request is rejected;
-//     - if failurePolicy=Ignore, the policy is skipped.
+// Not every expression sees all of them. A cluster evaluates a policy in four
+// batches and binds each batch differently, so the playground does too:
 //
-// matchConditions and validations are compiled in separate scopes, as they are
-// on a cluster: a variable read from a matchCondition is evaluated (and charged)
-// independently of the same variable read from a validation, which is why the
-// result panel reports two variable lists.
+//	matchConditions     no namespaceObject; authorizer bound
+//	validations         namespaceObject; authorizer bound
+//	messageExpressions  namespaceObject; authorizer not declared at all
+//	auditAnnotations    namespaceObject; authorizer declared but NOT bound
+//
+// Each batch also gets its own binding of `variables`, so a variable read from
+// two batches is evaluated -- and charged -- twice, as it is on a cluster.
+// matchConditions are the exception: `variables` is not declared there at all,
+// because the apiserver refuses to store a policy whose matchConditions name
+// it.
+//
+// matchCondition semantics:
+//  1. If ANY matchCondition evaluates to false, the policy is skipped.
+//  2. If ALL matchConditions evaluate to true, the policy is evaluated.
+//  3. If any matchCondition errors (and none are false), the policy is skipped
+//     too: failurePolicy=Fail rejects the request and failurePolicy=Ignore
+//     ignores the policy, and neither runs the validations.
 func EvalValidatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, namespaceInput, requestInput, authorizerInput []byte) (string, error) {
 	celInfo, err := extractCelInformation(policyInput)
 	if err != nil {
@@ -56,81 +69,109 @@ func EvalValidatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput
 		return "", err
 	}
 
-	matchConditionsEvaluator, err := newCelEvaluator(inputs, celInfo.variables)
+	compiler, err := newPolicyCompiler(celInfo.variables)
 	if err != nil {
 		return "", err
 	}
 
-	matchConditions := true
-	matchConditionsEvals := evalResponses{}
-	for _, matchCondition := range celInfo.matchConditions {
-		response := matchConditionsEvaluator.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression})
-		// An erroring matchCondition is left to the failurePolicy; only an
-		// unambiguous false skips the policy.
-		if !response.isError() && response.val != nil && response.val.Value() != true {
-			matchConditions = false
-		}
-		matchConditionsEvals = append(matchConditionsEvals, response)
-	}
-
-	validationEvals := evalResponses{}
-	auditAnnotationEvals := evalResponses{}
-	var validationVariableNames []string
-	validationVariables := evalResults{}
-
-	// run validations only if matchConditions pass
-	if matchConditions {
-		validationEvaluator, err := newCelEvaluator(inputs, celInfo.variables)
-		if err != nil {
-			return "", err
-		}
-		validationVariableNames = validationEvaluator.variableNames
-		validationVariables = validationEvaluator.variableResults
-
-		validationResult := true
-		for _, validation := range celInfo.validations {
-			response := validationEvaluator.evalExpression("", &validationExpression{expression: validation.expression})
-			if response.val == nil || response.val.Value() != false {
-				validationEvals = append(validationEvals, response)
-				continue
+	sections := evalSections{}
+	matched := true
+	if len(celInfo.matchConditions) > 0 {
+		scope := newMatchConditionScope(inputs)
+		sections.matchConditionScope = scope
+		for _, matchCondition := range celInfo.matchConditions {
+			response := scope.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}, declsWithAuthorizer)
+			if response.isError() || response.val == nil || response.val.Value() != true {
+				matched = false
 			}
-			// The validation failed: attach its message. A literal message wins
-			// over messageExpression, matching the apiserver.
-			validationResult = false
-			switch {
-			case validation.message != "":
-				response.message = validation.message
-			case validation.messageExpression != "":
-				messageResponse := validationEvaluator.evalExpression("", &messageExpression{expression: validation.messageExpression})
-				if messageResponse.isError() {
-					response = messageResponse
-				} else {
-					response.messageVal = messageResponse.val
-					response.addCost(messageResponse.cost)
-				}
-			}
-			validationEvals = append(validationEvals, response)
-		}
-
-		if validationResult {
-			for _, auditAnnotation := range celInfo.auditAnnotations {
-				response := validationEvaluator.evalExpression(auditAnnotation.key, &auditAnnotationExpression{expression: auditAnnotation.expression})
-				if !response.isError() {
-					response.messageVal, response.val = response.val, nil
-				}
-				auditAnnotationEvals = append(auditAnnotationEvals, response)
-			}
+			sections.matchConditions = append(sections.matchConditions, response)
 		}
 	}
 
-	response := generateEvalResponse(
-		matchConditionsEvaluator.variableNames, matchConditionsEvaluator.variableResults, matchConditionsEvals,
-		validationVariableNames, validationVariables, validationEvals,
-		auditAnnotationEvals, nil)
+	if matched {
+		sections.evaluatePolicy(compiler, inputs, celInfo)
+	}
 
-	out, err := json.Marshal(response)
+	out, err := json.Marshal(sections.response())
 	if err != nil {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// evaluatePolicy runs the three batches a matched policy evaluates: the
+// validations, every messageExpression, and every audit annotation. The last
+// two run whatever the validations decided -- a cluster evaluates them
+// unconditionally and charges for them -- even though a messageExpression's
+// result is only read when its validation failed.
+func (s *evalSections) evaluatePolicy(compiler *policyCompiler, inputs *evalInputs, celInfo *CelInformation) {
+	validationScope := compiler.newScope(inputs, validationBindings)
+	s.validationScope = validationScope
+	for _, validation := range celInfo.validations {
+		s.validations = append(s.validations, validationScope.evalExpression("", &validationExpression{expression: validation.expression}, declsWithAuthorizer))
+	}
+
+	messages := s.evaluateMessageExpressions(compiler, inputs, celInfo)
+
+	for i, validation := range celInfo.validations {
+		response := s.validations[i]
+		if response.isError() || response.val == nil || response.val.Value() == true {
+			continue
+		}
+		response.message = resolveMessage(validation, messages[i])
+	}
+
+	if len(celInfo.auditAnnotations) > 0 {
+		auditScope := compiler.newScope(inputs, auditAnnotationBindings)
+		s.auditAnnotationScope = auditScope
+		for _, auditAnnotation := range celInfo.auditAnnotations {
+			response := auditScope.evalExpression(auditAnnotation.key, &auditAnnotationExpression{expression: auditAnnotation.expression}, declsWithAuthorizer)
+			if !response.isError() {
+				response.messageVal, response.val = response.val, nil
+			}
+			s.auditAnnotations = append(s.auditAnnotations, response)
+		}
+	}
+}
+
+// evaluateMessageExpressions returns one entry per validation, nil where the
+// validation has no messageExpression. The returned slice is also published as
+// its own section, so the cost and any failure of a messageExpression is
+// visible next to the validation it belongs to, rather than folded into it.
+func (s *evalSections) evaluateMessageExpressions(compiler *policyCompiler, inputs *evalInputs, celInfo *CelInformation) evalResponses {
+	messages := make(evalResponses, len(celInfo.validations))
+	for i, validation := range celInfo.validations {
+		if validation.messageExpression == "" {
+			continue
+		}
+		if s.messageScope == nil {
+			s.messageScope = compiler.newScope(inputs, messageBindings)
+		}
+		messages[i] = s.messageScope.evalExpression("", &messageExpression{expression: validation.messageExpression}, declsWithoutAuthorizer)
+	}
+	if s.messageScope != nil {
+		s.messageExpressions = messages
+	}
+	return messages
+}
+
+// resolveMessage is the failure message a cluster would report for a validation
+// that did not pass. A messageExpression wins, but only if it produced a single
+// line of no more than MaxEvaluatedMessageExpressionSizeBytes; otherwise the
+// literal message is used, and failing that the expression itself.
+func resolveMessage(validation CelValidationInfo, evaluated *evalResponse) string {
+	message := ""
+	if value, ok := evaluated.stringValue(); ok {
+		value = strings.TrimSpace(value)
+		if len(value) <= celconfig.MaxEvaluatedMessageExpressionSizeBytes && !strings.ContainsAny(value, "\n") {
+			message = value
+		}
+	}
+	if message == "" {
+		message = strings.TrimSpace(validation.message)
+	}
+	if message == "" {
+		message = fmt.Sprintf("failed expression: %v", strings.TrimSpace(validation.expression))
+	}
+	return message
 }

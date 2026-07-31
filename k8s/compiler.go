@@ -23,18 +23,27 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter"
-	"k8s.io/apimachinery/pkg/util/version"
 	celplugin "k8s.io/apiserver/pkg/admission/plugin/cel"
 	apiservercel "k8s.io/apiserver/pkg/cel"
 	"k8s.io/apiserver/pkg/cel/environment"
 	"k8s.io/apiserver/pkg/cel/lazy"
 )
 
-// playgroundEnvVersion is the Kubernetes compatibility version the playground
-// compiles against. environment.MustBaseEnvSet gates each CEL library on the
-// version it shipped in, so this is what decides which functions a policy may
-// use. Bump it in lockstep with the k8s.io/apiserver dependency.
-var playgroundEnvVersion = version.MajorMinor(1, 36)
+// baseEnvSet is the CEL environment an apiserver compiles admission expressions
+// in. environment.DefaultCompatibilityVersion reports the minimum version the
+// running apiserver stays compatible with, which is one minor behind the binary
+// -- so a CEL library that shipped in the current minor is not usable until the
+// next release. Both upstream compile paths the playground mirrors
+// (plugin/policy/validating and plugin/webhook/generic) pass exactly this.
+func baseEnvSet() *environment.EnvSet {
+	return environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion())
+}
+
+// PlaygroundEnvVersion reports the Kubernetes version whose CEL environment the
+// playground compiles against, for display in the UI.
+func PlaygroundEnvVersion() string {
+	return environment.DefaultCompatibilityVersion().String()
+}
 
 // variablesTypeName must match the type name apiserver's CompositedCompiler
 // registers for the `variables` map (see composition.go upstream); the lazy map
@@ -46,6 +55,8 @@ const variablesTypeName = "kubernetes.variables"
 // it pulls in policy/generic -> webhook/generic -> util/webhook, which drags in
 // egressselector (grpc, konnectivity) and component-base/tracing (OTLP). Only
 // the ReturnTypes matter to the compiler, and they are reproduced verbatim.
+// k8s/oracle is a separate module and does import it, so the copies are fenced
+// by a differential test against the real thing.
 
 type matchConditionExpression struct{ expression string }
 
@@ -92,9 +103,21 @@ func (e *variableExpression) ReturnTypes() []*celgo.Type {
 	return []*celgo.Type{celgo.AnyType, celgo.DynType}
 }
 
+// declsWithAuthorizer is what everything except a messageExpression is compiled
+// with: matchConditions, validations and audit annotations in a policy, and a
+// webhook's matchConditions. HasParams stays false until the playground grows a
+// params input tab.
+var declsWithAuthorizer = celplugin.OptionalVariableDeclarations{HasAuthorizer: true}
+
+// declsWithoutAuthorizer compiles a messageExpression. The apiserver
+// deliberately does not declare `authorizer` there -- a message is rendered
+// after the decision is made, so it may not ask new authorization questions,
+// and naming it is a compilation error rather than a runtime one.
+var declsWithoutAuthorizer = celplugin.OptionalVariableDeclarations{HasAuthorizer: false}
+
 // evalActivation mirrors apiserver's own (unexported) evaluationActivation. The
 // playground has to build its own because it evaluates each expression itself
-// -- see celEvaluator.evalExpression for why -- but the variable names and the
+// -- see evalScope.evalExpression for why -- but the variable names and the
 // "declared but unbound" behaviour of authorizer are kept identical.
 type evalActivation struct {
 	object, oldObject, params, request, namespace, authorizer, requestResourceAuthorizer, variables any
@@ -125,22 +148,89 @@ func (a *evalActivation) ResolveName(name string) (any, bool) {
 
 func (a *evalActivation) Parent() interpreter.Activation { return nil }
 
-// celEvaluator compiles and evaluates one scope's worth of expressions with
-// apiserver's own compiler.
+// scopeBindings selects which of the optional CEL variables a scope binds.
 //
-// It deliberately does NOT go through celplugin.ConditionEvaluator.ForInput.
-// ForInput evaluates a whole batch and only reports one aggregate
-// `remainingBudget`; EvaluationResult carries no per-expression cost. The
-// playground's result panel shows a cost per validation, per matchCondition and
-// per variable, so the evaluation loop that upstream keeps in its unexported
-// evaluationActivation.Evaluate is reproduced here (about 20 lines) on top of
-// the exported CompilationResult.Program. Everything that decides *semantics* --
-// the environment, the type check, the cost estimator, the program options --
-// still comes from upstream.
-type celEvaluator struct {
-	compiler   *celplugin.CompositedCompiler
-	decls      celplugin.OptionalVariableDeclarations
-	ctx        context.Context
+// Declared-but-unbound is a real state: `authorizer` type-checks in an audit
+// annotation, because the annotation is compiled with the same declarations as
+// the validations, but it resolves to nothing at evaluation time, so an audit
+// annotation that calls it fails at runtime on a cluster.
+type scopeBindings struct {
+	authorizer      bool
+	namespaceObject bool
+}
+
+// The four batches an apiserver evaluates a ValidatingAdmissionPolicy in, and
+// the bindings each one is given (plugin/policy/validating/validator.go and
+// plugin/webhook/matchconditions/matcher.go).
+var (
+	matchConditionBindings  = scopeBindings{authorizer: true, namespaceObject: false}
+	validationBindings      = scopeBindings{authorizer: true, namespaceObject: true}
+	messageBindings         = scopeBindings{authorizer: false, namespaceObject: true}
+	auditAnnotationBindings = scopeBindings{authorizer: false, namespaceObject: true}
+)
+
+func newEvalActivation(inputs *evalInputs, bindings scopeBindings) *evalActivation {
+	activation := &evalActivation{
+		object:    inputs.object,
+		oldObject: inputs.oldObject,
+		request:   inputs.request,
+	}
+	if bindings.namespaceObject {
+		activation.namespace = inputs.namespaceObject
+	}
+	if bindings.authorizer {
+		activation.authorizer = inputs.authorizer
+		activation.requestResourceAuthorizer = inputs.requestResourceAuthorizer
+	}
+	return activation
+}
+
+// policyCompiler holds the compiled form of one ValidatingAdmissionPolicy.
+//
+// A CompositedCompiler must not outlive the policy it compiled: storing a
+// variable mutates the shared `variables` DeclType in place and there is no
+// exported reset, so a reused compiler lets a policy that declares no variables
+// type-check `variables.foo` left over from an earlier one. Within a single
+// policy the compiler is shared across scopes, which is both what the apiserver
+// does and, since compiling the base environment dominates an evaluation, most
+// of the playground's per-run cost.
+type policyCompiler struct {
+	compiler          *celplugin.CompositedCompiler
+	variableNames     []string
+	compiledVariables map[string]celplugin.CompilationResult
+}
+
+// newPolicyCompiler compiles spec.variables in order -- order matters, a
+// variable may reference the ones declared before it.
+func newPolicyCompiler(variables []CelVariableInfo) (*policyCompiler, error) {
+	compiler, err := celplugin.NewCompositedCompiler(baseEnvSet())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CEL compiler: %w", err)
+	}
+	p := &policyCompiler{
+		compiler:          compiler,
+		compiledVariables: make(map[string]celplugin.CompilationResult, len(variables)),
+	}
+	for _, variable := range variables {
+		accessor := &variableExpression{name: variable.name, expression: variable.expression}
+		p.compiledVariables[variable.name] = compiler.CompileAndStoreVariable(accessor, declsWithAuthorizer, environment.StoredExpressions)
+		p.variableNames = append(p.variableNames, variable.name)
+	}
+	return p, nil
+}
+
+// evalScope evaluates one batch of expressions against one binding of
+// `variables`.
+//
+// The apiserver evaluates a policy in four batches -- matchConditions,
+// validations, auditAnnotations and messageExpressions -- and each batch calls
+// ConditionEvaluator.ForInput, which builds a fresh lazy `variables` map. A
+// variable is therefore memoised, and charged, once per batch. evalScope is
+// that batch: one scope per ForInput the apiserver would make.
+type evalScope struct {
+	compiler celplugin.Compiler
+	ctx      context.Context
+
 	activation *evalActivation
 
 	// variableNames preserves spec.variables order for the result panel.
@@ -153,85 +243,87 @@ type celEvaluator struct {
 	variableResults   evalResults
 }
 
-func newCelEvaluator(inputs *evalInputs, variables []CelVariableInfo) (*celEvaluator, error) {
-	compiler, err := celplugin.NewCompositedCompiler(environment.MustBaseEnvSet(playgroundEnvVersion))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CEL compiler: %w", err)
-	}
-	e := &celEvaluator{
-		compiler: compiler,
-		// HasAuthorizer declares `authorizer` and `authorizer.requestResource`
-		// with apiserver's own library.Authz types, so the playground now runs
-		// the real authorization CEL library rather than a hand-rolled
-		// look-alike. HasParams stays false until the playground grows a params
-		// input tab.
-		decls:             celplugin.OptionalVariableDeclarations{HasAuthorizer: true},
+// newScope binds a fresh lazy `variables` map over the policy's compiled
+// variables. Each variable is evaluated on first dereference within the scope
+// and its cost recorded, which is the laziness, memoisation and cost accounting
+// apiserver gets from its composition context.
+func (p *policyCompiler) newScope(inputs *evalInputs, bindings scopeBindings) *evalScope {
+	s := &evalScope{
+		compiler:          p.compiler,
 		ctx:               context.Background(),
-		compiledVariables: map[string]celplugin.CompilationResult{},
+		activation:        newEvalActivation(inputs, bindings),
+		variableNames:     p.variableNames,
+		compiledVariables: p.compiledVariables,
 		variableResults:   evalResults{},
-		activation:        &evalActivation{},
 	}
-	if inputs.object != nil {
-		e.activation.object = inputs.object
-	}
-	if inputs.oldObject != nil {
-		e.activation.oldObject = inputs.oldObject
-	}
-	if inputs.request != nil {
-		e.activation.request = inputs.request
-	}
-	if inputs.namespaceObject != nil {
-		e.activation.namespace = inputs.namespaceObject
-	}
-	e.activation.authorizer = inputs.authorizer
-	e.activation.requestResourceAuthorizer = inputs.requestResourceAuthorizer
-	e.compileVariables(variables)
-	return e, nil
-}
-
-// compileVariables compiles spec.variables in order -- order matters, a variable
-// may reference the ones declared before it -- and binds `variables` to a lazy
-// map whose callbacks evaluate on first dereference and record the cost of that
-// evaluation. That is the same laziness and the same memoisation apiserver gets
-// from its composition context, with the per-variable cost kept.
-func (e *celEvaluator) compileVariables(variables []CelVariableInfo) {
 	lazyMap := lazy.NewMapValue(apiservercel.NewObjectType(variablesTypeName, map[string]*apiservercel.DeclField{}))
-	for _, variable := range variables {
-		accessor := &variableExpression{name: variable.name, expression: variable.expression}
-		e.compiledVariables[variable.name] = e.compiler.CompileAndStoreVariable(accessor, e.decls, environment.StoredExpressions)
-		e.variableNames = append(e.variableNames, variable.name)
-		lazyMap.Append(variable.name, e.variableCallback(variable.name))
+	for _, name := range p.variableNames {
+		lazyMap.Append(name, s.variableCallback(name))
 	}
-	e.activation.variables = lazyMap
+	s.activation.variables = lazyMap
+	return s
 }
 
-func (e *celEvaluator) variableCallback(name string) lazy.GetFieldFunc {
+// newMatchConditionScope compiles matchConditions, for a policy as well as for
+// a webhook, without declaring `variables`.
+//
+// A webhook has no spec.variables at all: the apiserver compiles its
+// matchConditions with a plain ConditionCompiler rather than a composited one,
+// so naming `variables` there does not compile.
+//
+// A policy does have them, and the apiserver's *runtime* compiler does declare
+// them for matchConditions -- but its registry validation does not, so
+// `kubectl apply` of such a policy fails with "undeclared reference to
+// 'variables'" and no cluster ever stores one. Of the apiserver's two gates the
+// playground shows the one an author hits first, and reports the same
+// compilation error the apiserver would.
+func newMatchConditionScope(inputs *evalInputs) *evalScope {
+	return &evalScope{
+		compiler:        celplugin.NewCompiler(baseEnvSet()),
+		ctx:             context.Background(),
+		activation:      newEvalActivation(inputs, matchConditionBindings),
+		variableResults: evalResults{},
+	}
+}
+
+func (s *evalScope) variableCallback(name string) lazy.GetFieldFunc {
 	return func(_ *lazy.MapValue) ref.Val {
-		result := e.compiledVariables[name]
+		result := s.compiledVariables[name]
 		var response *evalResponse
 		if result.Error != nil {
 			response = newEvalResponseCompilationErr(name, result.Error)
-		} else if val, details, err := result.Program.ContextEval(e.ctx, e.activation); err != nil {
-			response = newEvalResponseErr("evaluating", name, err)
+		} else if val, details, err := result.Program.ContextEval(s.ctx, s.activation); err != nil {
+			response = newEvalResponseErr(name, "evaluating", name, err, details)
 		} else {
 			response = newEvalResponse(name, val, details, "", nil)
 		}
-		e.variableResults[name] = response
+		s.variableResults[name] = response
 		return response.val
 	}
 }
 
-// evalExpression compiles and evaluates a single expression. A compilation
-// failure is reported as a result rather than returned as a Go error: a
-// mistyped expression is the answer the playground exists to give.
-func (e *celEvaluator) evalExpression(name string, accessor celplugin.ExpressionAccessor) *evalResponse {
-	result := e.compiler.CompileCELExpression(accessor, e.decls, environment.StoredExpressions)
+// evalExpression compiles and evaluates a single expression.
+//
+// It deliberately does not go through celplugin.ConditionEvaluator.ForInput.
+// ForInput evaluates a whole batch and only reports one aggregate
+// remainingBudget; EvaluationResult carries no per-expression cost. The
+// playground's result panel shows a cost per validation, per matchCondition and
+// per variable, so the evaluation loop that upstream keeps in its unexported
+// evaluationActivation.Evaluate is reproduced here on top of the exported
+// CompilationResult.Program. Everything that decides *semantics* -- the
+// environment, the type check, the cost estimator, the program options -- still
+// comes from upstream.
+//
+// A compilation failure is reported as a result rather than returned as a Go
+// error: a mistyped expression is the answer the playground exists to give.
+func (s *evalScope) evalExpression(name string, accessor celplugin.ExpressionAccessor, decls celplugin.OptionalVariableDeclarations) *evalResponse {
+	result := s.compiler.CompileCELExpression(accessor, decls, environment.StoredExpressions)
 	if result.Error != nil {
 		return newEvalResponseCompilationErr(name, result.Error)
 	}
-	val, details, err := result.Program.ContextEval(e.ctx, e.activation)
+	val, details, err := result.Program.ContextEval(s.ctx, s.activation)
 	if err != nil {
-		return newEvalResponseErr("evaluating", accessor.GetExpression(), err)
+		return newEvalResponseErr(name, "evaluating", accessor.GetExpression(), err, details)
 	}
 	return newEvalResponse(name, val, details, "", nil)
 }
