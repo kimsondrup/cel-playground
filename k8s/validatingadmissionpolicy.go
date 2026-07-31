@@ -78,7 +78,6 @@ func EvalValidatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput
 	matched := true
 	if len(celInfo.matchConditions) > 0 {
 		scope := newMatchConditionScope(inputs)
-		sections.matchConditionScope = scope
 		for _, matchCondition := range celInfo.matchConditions {
 			response := scope.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}, declsWithAuthorizer)
 			if response.isError() || response.val == nil || response.val.Value() != true {

@@ -259,8 +259,7 @@ func calculateEvalResponsesArrayCost(evalsArray []evalResponses) uint64 {
 // evalSections is one evaluation's worth of results, one entry per batch the
 // apiserver would evaluate. A nil scope is a batch the mode does not have.
 type evalSections struct {
-	matchConditionScope *evalScope
-	matchConditions     evalResponses
+	matchConditions evalResponses
 
 	validationScope *evalScope
 	validations     evalResponses
@@ -279,8 +278,7 @@ type evalSections struct {
 // the messageExpressions share one, and the audit annotations start again from
 // a full one.
 func (s *evalSections) chainCosts() (matchConditions, validations, auditAnnotations uint64) {
-	matchConditions = calculateVariablesCost(s.matchConditionScope) +
-		calculateEvalResponsesCost(s.matchConditions) +
+	matchConditions = calculateEvalResponsesCost(s.matchConditions) +
 		calculateEvalResponsesArrayCost(s.webhookMatchConditions)
 	validations = calculateVariablesCost(s.validationScope) +
 		calculateEvalResponsesCost(s.validations) +
@@ -296,7 +294,7 @@ func (s *evalSections) chainCosts() (matchConditions, validations, auditAnnotati
 // fails the request; the playground keeps evaluating, so that the expression
 // that overran is still visible, and says so here instead.
 func (s *evalSections) exceededBudgets() []*EvalResult {
-	matchConditions, validations, auditAnnotations := s.chainCosts()
+	_, validations, auditAnnotations := s.chainCosts()
 	var exceeded []*EvalResult
 	report := func(name string, cost uint64, budget uint64) {
 		if cost <= budget {
@@ -310,7 +308,12 @@ func (s *evalSections) exceededBudgets() []*EvalResult {
 			Error:   &message,
 		})
 	}
-	report("matchConditions", matchConditions, celconfig.RuntimeCELCostBudgetMatchConditions)
+	// Every set of matchConditions is matched on its own, so each webhook in a
+	// configuration gets a whole budget rather than a share of one.
+	report("matchConditions", calculateEvalResponsesCost(s.matchConditions), celconfig.RuntimeCELCostBudgetMatchConditions)
+	for i, webhook := range s.webhookMatchConditions {
+		report(fmt.Sprintf("webhooks[%d].matchConditions", i), calculateEvalResponsesCost(webhook), celconfig.RuntimeCELCostBudgetMatchConditions)
+	}
 	report("validations and messageExpressions", validations, celconfig.RuntimeCELCostBudget)
 	report("auditAnnotations", auditAnnotations, celconfig.RuntimeCELCostBudget)
 	return exceeded
