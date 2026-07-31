@@ -16,9 +16,13 @@ package k8s
 
 import (
 	"fmt"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestUnifiedDiff(t *testing.T) {
@@ -227,5 +231,113 @@ func TestUnifiedDiffLargeDocument(t *testing.T) {
 	// The hunk must be located at the insertion point, not at line 1.
 	if want := fmt.Sprintf("@@ -%d,", lines/2-diffContextLines+1); !strings.Contains(got, want) {
 		t.Errorf("diff hunk header is not at the insertion point, want %q:\n%s", want, got)
+	}
+}
+
+// TestSchemaCoverageBeyondEmbeddedSpecs pins the coverage the generated
+// client-go schema buys over the OpenAPI test fixtures that preceded it. A
+// group-version without a schema merges lists atomically, which silently
+// contradicts what a cluster would do -- so a built-in type falling out of
+// coverage is a real regression, not a cosmetic one.
+func TestSchemaCoverageBeyondEmbeddedSpecs(t *testing.T) {
+	backed := []schema.GroupVersionKind{
+		{Version: "v1", Kind: "Pod"},
+		{Version: "v1", Kind: "Service"},
+		{Group: "apps", Version: "v1", Kind: "Deployment"},
+		{Group: "batch", Version: "v1", Kind: "Job"},
+		// None of the following had an embedded spec before the switch to the
+		// generated schema.
+		{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "Role"},
+		{Group: "networking.k8s.io", Version: "v1", Kind: "NetworkPolicy"},
+		{Group: "policy", Version: "v1", Kind: "PodDisruptionBudget"},
+		{Group: "autoscaling", Version: "v2", Kind: "HorizontalPodAutoscaler"},
+	}
+	for _, gvk := range backed {
+		if _, ok := typeConverterFor(gvk); !ok {
+			t.Errorf("%s has no schema, so its lists would merge atomically", gvk)
+		}
+	}
+
+	// A custom resource has no schema anywhere and must still take the deduced
+	// path, which is what the missing-schema warning tells the user about.
+	crd := schema.GroupVersionKind{Group: "example.com", Version: "v1", Kind: "Widget"}
+	if _, ok := typeConverterFor(crd); ok {
+		t.Errorf("%s reports a schema, but nothing can know a custom resource's shape", crd)
+	}
+}
+
+// TestUndeclaredFieldsAreAllReported covers the preserve-and-warn path.
+// structured-merge-diff stops walking a map at its first undeclared field, so
+// without the pruning loop in undeclaredFields only one of these would surface.
+// TestUndeclaredFieldsCompleteBesideAnotherError covers an object that is both
+// missing a field from the schema and wrong about a declared one. The probe
+// prunes until the parse stops naming undeclared fields, and the parse then
+// keeps failing on the type error -- which says nothing about whether any
+// undeclared field is left, so the list is complete and must not be reported
+// as possibly truncated.
+func TestUndeclaredFieldsCompleteBesideAnotherError(t *testing.T) {
+	gvk := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "demo"},
+		"spec": map[string]any{
+			// Declared, but a string where the schema wants an integer.
+			"replicas": "three",
+			"alpha":    "1",
+		},
+	}}
+	got, more := undeclaredFields(gvk, object)
+	if want := []string{".spec.alpha"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("undeclaredFields() = %v, want %v", got, want)
+	}
+	if more {
+		t.Error("undeclaredFields() reported the list as incomplete, want complete -- the parse " +
+			"still fails, but on the type error, which hides no undeclared field")
+	}
+}
+
+func TestUndeclaredFieldsAreAllReported(t *testing.T) {
+	gvk := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "demo", "notAField": "x"},
+		"spec": map[string]any{
+			"replicas": int64(1),
+			"alpha":    "1",
+			"beta":     "2",
+		},
+	}}
+	got, more := undeclaredFields(gvk, object)
+	want := []string{".metadata.notAField", ".spec.alpha", ".spec.beta"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("undeclaredFields() = %v, want %v", got, want)
+	}
+	if more {
+		t.Error("undeclaredFields() reported the list as incomplete, want complete")
+	}
+
+	// A field name containing a dot cannot be pruned, so the walk stops there
+	// and has to say the list may be incomplete rather than implying it is not.
+	dotted := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "demo"},
+		"spec":       map[string]any{"replicas": int64(1), "my.field": "x", "zzz": "y"},
+	}}
+	if _, more := undeclaredFields(gvk, dotted); !more {
+		t.Error("undeclaredFields() reported a complete list after giving up on a dotted field name")
+	}
+
+	// A fully declared object must not warn.
+	clean := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apps/v1",
+		"kind":       "Deployment",
+		"metadata":   map[string]any{"name": "demo"},
+		"spec":       map[string]any{"replicas": int64(1)},
+	}}
+	if got, more := undeclaredFields(gvk, clean); got != nil || more {
+		t.Errorf("undeclaredFields() on a clean object = %v, %v, want nil, false", got, more)
 	}
 }
