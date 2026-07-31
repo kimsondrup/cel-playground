@@ -1,0 +1,21 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "jsonpatch-add-and-replace"
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+    - apiGroups:   ["apps"]
+      apiVersions: ["v1"]
+      operations:  ["CREATE", "UPDATE"]
+      resources:   ["deployments"]
+  mutations:
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: >
+        [
+          JSONPatch{op: "add", path: "/metadata/labels/team", value: "platform"},
+          JSONPatch{op: "replace", path: "/spec/replicas", value: 3}
+        ]

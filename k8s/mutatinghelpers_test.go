@@ -31,6 +31,34 @@ import (
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 )
 
+func TestGuessResource(t *testing.T) {
+	tests := []struct {
+		kind string
+		want string
+	}{
+		{"Deployment", "deployments"},
+		{"Pod", "pods"},
+		{"NetworkPolicy", "networkpolicies"},
+		{"Ingress", "ingresses"},
+		{"Endpoints", "endpoints"},
+		// A trailing "s" does not make a kind plural: these are singular and
+		// their resources take -es. Endpoints above is the exception.
+		{"ComponentStatus", "componentstatuses"},
+		{"Status", "statuses"},
+		{"Gateway", "gateways"},
+		{"StorageClass", "storageclasses"},
+		{"PriorityClass", "priorityclasses"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kind, func(t *testing.T) {
+			if got := guessResource(tt.kind); got != tt.want {
+				t.Errorf("guessResource(%q) = %q, want %q", tt.kind, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUnifiedDiff(t *testing.T) {
 	tests := []struct {
 		name string
@@ -466,6 +494,30 @@ func TestUnifiedDiffLargeDocument(t *testing.T) {
 	// The hunk must be located at the insertion point, not at line 1.
 	if want := fmt.Sprintf("@@ -%d,", lines/2-diffContextLines+1); !strings.Contains(got, want) {
 		t.Errorf("diff hunk header is not at the insertion point, want %q:\n%s", want, got)
+	}
+}
+
+// TestBlankNamespaceTabIsConsistent pins the two decoders that read the
+// Namespace tab against each other. deserializeNamespace feeds the
+// matchCondition environment and decodeNamespaceObject feeds the mutation
+// patchers; cmd/wasm/main.go sends []byte("") for a blank tab, never nil, so if
+// only one of them treats empty as absent the same expression answers
+// differently in a matchCondition and in a mutation of the same policy.
+func TestBlankNamespaceTabIsConsistent(t *testing.T) {
+	for _, input := range [][]byte{nil, []byte(""), []byte("   \n")} {
+		namespaceMap, err := deserializeNamespace(input)
+		if err != nil {
+			t.Fatalf("deserializeNamespace(%q) error = %v", input, err)
+		}
+		namespaceObject, err := decodeNamespaceObject(input)
+		if err != nil {
+			t.Fatalf("decodeNamespaceObject(%q) error = %v", input, err)
+		}
+		if (namespaceMap == nil) != (namespaceObject == nil) {
+			t.Errorf("input %q: deserializeNamespace nil=%v but decodeNamespaceObject nil=%v -- "+
+				"the matchCondition and mutation environments disagree about the same tab",
+				input, namespaceMap == nil, namespaceObject == nil)
+		}
 	}
 }
 

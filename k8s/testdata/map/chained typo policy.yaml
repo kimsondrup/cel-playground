@@ -1,0 +1,19 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "chained-with-a-typo"
+spec:
+  failurePolicy: Ignore
+  reinvocationPolicy: Never
+  mutations:
+  # Writes a field the Deployment schema does not declare. Only this mutation
+  # should be named in the warning.
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: >
+        [JSONPatch{op: "add", path: "/spec/replicaz", value: 3}]
+  # Touches only a label, and carries the misspelling above through untouched.
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{metadata: Object.metadata{labels: {"second": "ran"}}}

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tricky
+  namespace: default
+  annotations:
+    n: "en-value"
+    on: "on-value"
+    yes: "yes-value"
+    off: "off-value"
+data:
+  key: value

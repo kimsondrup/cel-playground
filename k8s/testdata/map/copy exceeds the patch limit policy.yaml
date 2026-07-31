@@ -1,0 +1,13 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "copy-exceeds-the-patch-limit"
+spec:
+  failurePolicy: Ignore
+  reinvocationPolicy: Never
+  mutations:
+  # Enough copies that the patch itself is refused while it is being applied,
+  # the way a cluster refuses it, rather than after the object exists.
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: '[JSONPatch{op: "copy", from: "/spec", path: "/spec/x0"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x1"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x2"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x3"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x4"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x5"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x6"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x7"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x8"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x9"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x10"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x11"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x12"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x13"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x14"}, JSONPatch{op: "copy", from: "/spec", path: "/spec/x15"}]'

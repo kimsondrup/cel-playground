@@ -74,9 +74,24 @@ type lazyVariableEval struct {
 	name string
 	ast  *cel.Ast
 	val  *evalResponse
+	// evaluating is set while the expression is running, so a variable that
+	// reads itself is answered with an error rather than by starting again.
+	evaluating bool
 }
 
 func (lve *lazyVariableEval) eval(env *cel.Env, activation interpreter.Activation) ref.Val {
+	// The value is recorded only once the expression returns, so an expression
+	// that reads its own name re-enters this and never gets there: the
+	// activation resolves the name by calling back into here, unbounded, until
+	// the stack runs out and the whole module dies. Kubernetes refuses such a
+	// policy when it is created -- a variable may only read the ones declared
+	// before it -- so there is nothing to reproduce, only a crash to avoid.
+	if lve.evaluating {
+		return types.NewErr("variable %q reads itself", lve.name)
+	}
+	lve.evaluating = true
+	defer func() { lve.evaluating = false }()
+
 	val := lve.evalExpression(env, activation)
 	lve.val = val
 	return val.val
@@ -113,14 +128,45 @@ type EvalResult struct {
 	Message any     `json:"message,omitempty"`
 }
 
+// EvalMutationResult is the outcome of a single MutatingAdmissionPolicy
+// spec.mutations entry. MutatedObject is the YAML serialization of the object
+// as it looks *after* this mutation has been applied, so a chain of mutations
+// can be inspected step by step.
+type EvalMutationResult struct {
+	PatchType     string  `json:"patchType,omitempty"`
+	MutatedObject string  `json:"mutatedObject,omitempty"`
+	Cost          *uint64 `json:"cost,omitempty"`
+	Error         *string `json:"error,omitempty"`
+	IsError       bool    `json:"isError,omitempty"`
+}
+
 type EvalResponse struct {
-	MatchConditionsVariables []*EvalVariable `json:"matchConditionVariables,omitempty"`
-	MatchConditions          []*EvalResult   `json:"matchConditions,omitempty"`
-	ValidationVariables      []*EvalVariable `json:"validationVariables,omitempty"`
-	Validations              []*EvalResult   `json:"validations,omitempty"`
-	AuditAnnotations         []*EvalResult   `json:"auditAnnotations,omitempty"`
-	WebhookMatchConditions   [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
-	Cost                     *uint64         `json:"cost,omitempty"`
+	// Warnings is first so it renders at the top of the output panel: the JSON
+	// key order drives the order the accordions are built in.
+	Warnings []string `json:"warnings,omitempty"`
+	// Outcome is a plain sentence saying what the run amounted to, for the
+	// endings a panel otherwise conveys by leaving a section out.
+	Outcome                  string                `json:"outcome,omitempty"`
+	MatchConditionsVariables []*EvalVariable       `json:"matchConditionVariables,omitempty"`
+	MatchConditions          []*EvalResult         `json:"matchConditions,omitempty"`
+	ValidationVariables      []*EvalVariable       `json:"validationVariables,omitempty"`
+	Validations              []*EvalResult         `json:"validations,omitempty"`
+	AuditAnnotations         []*EvalResult         `json:"auditAnnotations,omitempty"`
+	MutationVariables        []*EvalVariable       `json:"mutationVariables,omitempty"`
+	Mutations                []*EvalMutationResult `json:"mutations,omitempty"`
+	// Diff comes before FinalObject: it is the short answer to "what did this
+	// policy change", and the final object is the long one.
+	Diff        string `json:"diff,omitempty"`
+	FinalObject string `json:"finalObject,omitempty"`
+	// NotSimulated lists the parts of this policy the playground parsed and did
+	// not act on. It is a standing property of the mode rather than of the run,
+	// which is why it is not a warning: a warning that fires every time stops
+	// being read, and the warnings above are all "this result may be wrong".
+	NotSimulated           string          `json:"notSimulated,omitempty"`
+	FailurePolicy          string          `json:"failurePolicy,omitempty"`
+	ReinvocationPolicy     string          `json:"reinvocationPolicy,omitempty"`
+	WebhookMatchConditions [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
+	Cost                   *uint64         `json:"cost,omitempty"`
 }
 
 func getResults(val ref.Val) (any, *string) {

@@ -1,0 +1,17 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: "selector-narrowed-check-in-a-matchcondition"
+spec:
+  matchConditions:
+  - name: can-list-pods-on-node-a
+    expression: "authorizer.group('').resource('pods').fieldSelector('spec.nodeName=node-a').check('list').allowed()"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{
+          metadata: Object.metadata{
+            labels: {"tier": "critical"}
+          }
+        }
