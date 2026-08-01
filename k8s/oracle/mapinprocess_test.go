@@ -26,6 +26,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/managedfields"
 
 	"github.com/undistro/cel-playground/k8s/oracle"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apiserver/pkg/server"
 )
 
 func deploymentInput() *unstructured.Unstructured {
@@ -264,5 +267,20 @@ func TestTypeConverterAtomicGuard(t *testing.T) {
 		}
 		c, _, _ := unstructured.NestedSlice(out.Object, "spec", "template", "spec", "containers")
 		t.Logf("%s: ACCEPTED, containers now:\n%s", tc.name, pretty(c))
+	}
+}
+
+// The playground arms jsonpatch.AccumulatedCopySizeLimit itself, from a literal
+// copy of the apiserver's own default. There is no exported constant to
+// reference -- the value is inlined into NewConfig -- so this is what stops the
+// copy going stale: build the config the apiserver builds and compare.
+//
+// Upstream: apiserver/pkg/server/config.go, Config.JSONPatchMaxCopyBytes.
+func TestJSONPatchCopyLimitMatchesTheApiserverDefault(t *testing.T) {
+	const playgroundLimit = 3 * 1024 * 1024
+	config := server.NewConfig(serializer.NewCodecFactory(runtime.NewScheme()))
+	if config.JSONPatchMaxCopyBytes != playgroundLimit {
+		t.Errorf("the apiserver's JSONPatchMaxCopyBytes is %d and the playground arms %d; update maxAccumulatedCopyBytes in k8s/mutatingadmissionpolicy.go",
+			config.JSONPatchMaxCopyBytes, playgroundLimit)
 	}
 }

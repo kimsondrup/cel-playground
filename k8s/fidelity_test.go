@@ -516,3 +516,102 @@ userInfo:
 		})
 	}
 }
+
+// `request.requestKind` and `request.requestResource` are what the client asked
+// for and `request.kind`/`request.resource` what the policy matched at; they
+// differ only under matchPolicy: Equivalent, which is the reason the fields
+// exist. `request.options` carries what the client sent -- fieldManager,
+// fieldValidation -- which nothing here could invent.
+//
+// Upstream: plugin/cel/condition.go CreateAdmissionRequest takes the attributes
+// plus the matched GVR and GVK, and reads options off the attributes.
+func TestRequestKeepsWhatTheTabDistinguishes(t *testing.T) {
+	const request = `
+kind:
+  group: apps
+  version: v1
+  kind: Deployment
+resource:
+  group: apps
+  version: v1
+  resource: deployments
+requestKind:
+  group: apps
+  version: v1beta1
+  kind: Deployment
+requestResource:
+  group: apps
+  version: v1beta1
+  resource: deployments
+name: web
+namespace: production
+operation: CREATE
+options:
+  fieldManager: kubectl-client-side-apply
+  fieldValidation: Strict
+userInfo:
+  username: alice
+`
+	tests := []struct {
+		name       string
+		expression string
+	}{
+		{"kind is the matched version", `request.kind.version == 'v1'`},
+		{"requestKind is the version asked for", `request.requestKind.version == 'v1beta1'`},
+		{"requestResource is the version asked for", `request.requestResource.version == 'v1beta1'`},
+		{"options carries what the client sent", `request.options.fieldManager == 'kubectl-client-side-apply'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: request-shape\nspec:\n  validations:\n    - expression: \"" + tt.expression + "\"\n"
+			out, err := EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte(fidelityObject), nil, []byte(request), nil)
+			if err != nil {
+				t.Fatalf("EvalValidatingAdmissionPolicy() error: %v", err)
+			}
+			response := EvalResponse{}
+			if err := json.Unmarshal([]byte(out), &response); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v", err)
+			}
+			if len(response.Validations) != 1 {
+				t.Fatalf("got %d validations, want 1", len(response.Validations))
+			}
+			if response.Validations[0].IsError {
+				t.Fatalf("%s errored: %s", tt.expression, *response.Validations[0].Error)
+			}
+			if response.Validations[0].Result != true {
+				t.Errorf("%s = %v, want true", tt.expression, response.Validations[0].Result)
+			}
+		})
+	}
+}
+
+// A false matchCondition beats an erroring one whatever order they are in. The
+// matcher evaluates every condition and collects the errors, then walks the
+// results and returns "does not match" on the first false one; the errors are
+// only read if nothing was false. So the policy is skipped and the request
+// admitted, under either failurePolicy.
+//
+// Upstream: plugin/webhook/matchconditions/matcher.go, Match.
+func TestAFalseMatchConditionBeatsAnErroringOne(t *testing.T) {
+	conditions := "  matchConditions:\n" +
+		"    - name: broken\n      expression: \"object.spec.missing == 1\"\n" +
+		"    - name: never\n      expression: \"false\"\n"
+
+	for _, failurePolicy := range []string{"Fail", "Ignore"} {
+		t.Run(failurePolicy, func(t *testing.T) {
+			policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: order\nspec:\n  failurePolicy: " +
+				failurePolicy + "\n" + conditions + "  validations:\n    - expression: \"false\"\n"
+			response := evalFidelityPolicy(t, policy)
+			if len(response.Decision) != 1 {
+				t.Fatalf("got %d decisions, want 1", len(response.Decision))
+			}
+			if response.Decision[0].Result != true {
+				t.Errorf("decision = %v (%v), want admitted: a false matchCondition skips the policy",
+					response.Decision[0].Result, response.Decision[0].Message)
+			}
+			if got, _ := response.Decision[0].Message.(string); !strings.Contains(got, `matchCondition "never" is false`) {
+				t.Errorf("decision message = %q, want it to name the false condition", got)
+			}
+		})
+	}
+}

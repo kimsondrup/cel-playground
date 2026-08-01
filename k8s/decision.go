@@ -16,6 +16,7 @@ package k8s
 
 import (
 	"fmt"
+	"strings"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 )
@@ -25,26 +26,52 @@ import (
 // gets through. These turn the results into that sentence, following the same
 // rules the apiserver's validator and matcher follow.
 
+// admissionResult is the one row the decision section holds.
+func admissionResult(admitted bool, message string) []*EvalResult {
+	name := "admission"
+	return []*EvalResult{{Name: &name, Result: admitted, Message: message, IsError: !admitted}}
+}
+
+// matchConditionDecision reports what the matchConditions alone settle, or nil
+// when they let the request through to the rest of the policy.
+//
+// A false condition beats an erroring one whatever order they are written in.
+// The matcher evaluates every condition, collects the errors, and then walks
+// the results: the first false answer returns "does not match" immediately, and
+// the errors are only consulted if no answer was false
+// (plugin/webhook/matchconditions/matcher.go). So a policy with one broken
+// condition and one false one is skipped rather than failed, under either
+// failurePolicy.
+func matchConditionDecision(responses evalResponses, conditions []CelMatchConditionsInfo, failurePolicy admissionregistrationv1.FailurePolicyType) []*EvalResult {
+	failed := -1
+	for i, condition := range responses {
+		if condition.isError() {
+			if failed < 0 {
+				failed = i
+			}
+			continue
+		}
+		if condition.val == nil || condition.val.Value() != true {
+			return admissionResult(true, fmt.Sprintf("admitted: matchCondition %q is false, so the policy does not apply to this request", conditions[i].name))
+		}
+	}
+	if failed < 0 {
+		return nil
+	}
+	if failurePolicy == admissionregistrationv1.Fail {
+		return admissionResult(false, fmt.Sprintf("rejected: matchCondition %q failed and failurePolicy is Fail", conditions[failed].name))
+	}
+	return admissionResult(true, fmt.Sprintf("admitted: matchCondition %q failed and failurePolicy is Ignore, so the policy is skipped", conditions[failed].name))
+}
+
 // policyDecision reports what a cluster would do with the request, given the
 // policy's failurePolicy and what its expressions did.
 func (s *evalSections) policyDecision(celInfo *CelInformation) []*EvalResult {
-	name := "admission"
-	result := func(admitted bool, message string) []*EvalResult {
-		return []*EvalResult{{Name: &name, Result: admitted, Message: message, IsError: !admitted}}
-	}
+	result := admissionResult
 	rejects := celInfo.failurePolicy == admissionregistrationv1.Fail
 
-	for i, condition := range s.matchConditions {
-		matchCondition := celInfo.matchConditions[i]
-		if condition.isError() {
-			if rejects {
-				return result(false, fmt.Sprintf("rejected: matchCondition %q failed and failurePolicy is Fail", matchCondition.name))
-			}
-			return result(true, fmt.Sprintf("admitted: matchCondition %q failed and failurePolicy is Ignore, so the policy is skipped", matchCondition.name))
-		}
-		if condition.val == nil || condition.val.Value() != true {
-			return result(true, fmt.Sprintf("admitted: matchCondition %q is false, so the policy does not apply to this request", matchCondition.name))
-		}
+	if decision := matchConditionDecision(s.matchConditions, celInfo.matchConditions, celInfo.failurePolicy); decision != nil {
+		return decision
 	}
 
 	for i, validation := range s.validations {
@@ -69,38 +96,43 @@ func (s *evalSections) policyDecision(celInfo *CelInformation) []*EvalResult {
 // playground has nothing to reject, so it applies what it can and says here
 // that a cluster would not have.
 func (s *evalSections) mutationDecision(celInfo *CelInformation) []*EvalResult {
-	name := "admission"
-	result := func(admitted bool, message string) []*EvalResult {
-		return []*EvalResult{{Name: &name, Result: admitted, Message: message, IsError: !admitted}}
-	}
-	rejects := celInfo.failurePolicy == admissionregistrationv1.Fail
+	result := admissionResult
 
-	for i, condition := range s.matchConditions {
-		matchCondition := celInfo.matchConditions[i]
-		if condition.isError() {
-			if rejects {
-				return result(false, fmt.Sprintf("rejected: matchCondition %q failed and failurePolicy is Fail", matchCondition.name))
-			}
-			return result(true, fmt.Sprintf("admitted: matchCondition %q failed and failurePolicy is Ignore, so the policy is skipped", matchCondition.name))
-		}
-		if condition.val == nil || condition.val.Value() != true {
-			return result(true, fmt.Sprintf("admitted: matchCondition %q is false, so the policy does not apply to this request", matchCondition.name))
-		}
+	if decision := matchConditionDecision(s.matchConditions, celInfo.matchConditions, celInfo.failurePolicy); decision != nil {
+		return decision
 	}
 
+	var failed, fatal []string
 	for i, mutation := range s.mutations {
 		if !mutation.IsError {
 			continue
 		}
-		if rejects {
-			return result(false, fmt.Sprintf("rejected: mutations[%d] failed and failurePolicy is Fail, so the request is denied and nothing is applied", i))
+		failed = append(failed, fmt.Sprintf("mutations[%d]", i))
+		if i < len(s.mutationFatal) && s.mutationFatal[i] {
+			fatal = append(fatal, fmt.Sprintf("mutations[%d]", i))
 		}
-		return result(true, fmt.Sprintf("admitted: mutations[%d] failed but failurePolicy is Ignore, so it is skipped", i))
 	}
 
 	switch {
+	case len(fatal) > 0:
+		// A patched object the apiserver cannot decode comes back from the
+		// patcher as a StatusError, and the dispatcher returns those instead of
+		// collecting them, which is what takes them past the failurePolicy
+		// filter. So this is an error the request cannot survive either way.
+		return result(false, fmt.Sprintf("rejected: %s produced an object the apiserver cannot decode, which fails the request whatever failurePolicy says",
+			strings.Join(fatal, ", ")))
+	case len(failed) > 0 && celInfo.failurePolicy == admissionregistrationv1.Fail:
+		return result(false, fmt.Sprintf("rejected: %s failed and failurePolicy is Fail, so the request is denied and nothing is applied",
+			strings.Join(failed, ", ")))
+	case len(failed) > 0:
+		return result(true, fmt.Sprintf("admitted: %s failed but failurePolicy is Ignore, so those mutations are skipped and the rest still apply",
+			strings.Join(failed, ", ")))
 	case len(celInfo.mutations) == 0:
 		return result(true, "admitted: the policy has no mutations")
+	case s.finalObject == "" && s.mutationsSkipped:
+		// The dispatcher skips a patcher when there is no object to patch, and
+		// the request goes through untouched.
+		return result(true, "admitted: the request carries no object, so no mutation ran")
 	case s.diff == "":
 		return result(true, "admitted: every mutation ran and left the object unchanged")
 	}

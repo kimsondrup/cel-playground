@@ -22,7 +22,8 @@ examples:
         name: "add-managed-by-label"
       spec:
         # failurePolicy: how the apiserver reacts if this policy fails to
-        # evaluate (Fail = deny the request, Ignore = skip this policy and admit the request).
+        # evaluate. Fail denies the request; Ignore skips this policy and lets
+        # the rest of admission decide.
         # reinvocationPolicy: whether the mutation list may run more than once
         # if other policies also mutate the object (Never = run it once).
         failurePolicy: Fail
@@ -379,8 +380,10 @@ examples:
         # label when it is missing.
         # Add `tier: <anything>` to the object's labels and re-run: the
         # condition becomes false, nothing is mutated, and the result says so.
-        # To skip a single mutation while others still run, return an empty
-        # Object{} from it instead -- or an empty list [] from a JSONPatch.
+        # To skip a single mutation while the others still run, have it return
+        # an empty Object{}, or have a JSONPatch return an empty list from a
+        # conditional: `cond ? [JSONPatch{...}] : []`. A bare [] does not
+        # compile -- CEL cannot tell what an empty literal list holds.
         matchConditions:
         - name: tier-not-set
           expression: "!has(object.metadata.labels) || !('tier' in object.metadata.labels)"
@@ -446,6 +449,10 @@ examples:
         # Every value comes from a different context binding available to a
         # policy -- one annotation per input tab, so the result reads as a
         # legend for what each binding holds.
+        #
+        # The reported cost dwarfs every other example's because of the
+        # authorizer check: upstream prices one at ~350,000 of the 10,000,000
+        # a single mutation may spend. Everything else here costs tens.
         - patchType: ApplyConfiguration
           applyConfiguration:
             expression: >

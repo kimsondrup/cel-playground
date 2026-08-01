@@ -179,12 +179,10 @@ spec:
             JSONPatch{op: "replace", path: "/spec/replicas", value: 7}
           ]
 `)
-	binding := parseMAPBinding(t, `
-metadata:
-  name: oracle-map-e2e-binding
-spec:
-  policyName: oracle-map-e2e
-`)
+	// Selected by label rather than cluster-wide: every test here shares one
+	// apiserver, and a policy that matches every Deployment outlives its own
+	// test for as long as the informer takes to notice the delete.
+	binding := parseMAPBinding(t, bindingYAML("oracle-map-e2e", "map-e2e", "yes"))
 	if err := installMAP(t, o, policy, binding); err != nil {
 		t.Fatalf("installing: %v", err)
 	}
@@ -193,7 +191,10 @@ spec:
 	before := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps/v1",
 		"kind":       "Deployment",
-		"metadata":   map[string]any{"name": "oracle-map-e2e-dep", "namespace": "default"},
+		"metadata": map[string]any{
+			"name": "oracle-map-e2e-dep", "namespace": "default",
+			"labels": map[string]any{"map-e2e": "yes"},
+		},
 		"spec": map[string]any{
 			"replicas": int64(1),
 			"selector": map[string]any{"matchLabels": map[string]any{"app": "x"}},

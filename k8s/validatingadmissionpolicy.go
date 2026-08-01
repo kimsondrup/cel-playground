@@ -91,6 +91,7 @@ func EvalValidatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput
 	if matched {
 		sections.evaluatePolicy(compiler, inputs, celInfo)
 	}
+	sections.notSimulated = validatingNotSimulated(celInfo)
 	sections.decision = sections.policyDecision(celInfo)
 
 	out, err := json.Marshal(sections.response())

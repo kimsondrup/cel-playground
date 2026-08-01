@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	apimachineryjson "k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/apiserver/pkg/admission"
 	celplugin "k8s.io/apiserver/pkg/admission/plugin/cel"
 	"k8s.io/apiserver/pkg/authentication/user"
@@ -59,7 +60,14 @@ type evalInputs struct {
 	namespace *corev1.Namespace
 	// attributes is what the Request tab stands for, and admissionRequest is
 	// what the apiserver derives from it and binds as `request`.
+	//
+	// matchedKind and matchedResource are the group-version the policy was
+	// matched at, which is the request's own unless the tab distinguishes them.
+	// They are the two arguments CreateAdmissionRequest takes beside the
+	// attributes, and the patchers rebuild the request from the same three.
 	attributes       admission.Attributes
+	matchedKind      schema.GroupVersionKind
+	matchedResource  schema.GroupVersionResource
 	admissionRequest *admissionv1.AdmissionRequest
 	rbacAuthorizer   authorizer.Authorizer
 }
@@ -75,15 +83,15 @@ type evalInputs struct {
 func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, authorizerInput []byte) (*evalInputs, error) {
 	oldObject, err := decodeObjectInput(oldObjectInput)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode input for the old resource value: %w", err)
+		return nil, fmt.Errorf("the Old Object tab is not a Kubernetes object: %w", err)
 	}
 	object, err := decodeObjectInput(objectInput)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode input for the new resource value: %w", err)
+		return nil, fmt.Errorf("the Object tab is not a Kubernetes object: %w", err)
 	}
 	namespace, err := decodeNamespaceInput(namespaceInput)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode input for the namespace: %w", err)
+		return nil, fmt.Errorf("the Namespace tab is not a Namespace: %w", err)
 	}
 	namespaceObject, err := objectToMap(celplugin.CreateNamespaceObject(namespace))
 	if err != nil {
@@ -91,7 +99,7 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 	}
 	request, err := decodeRequestInput(requestInput)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode input for the request: %w", err)
+		return nil, fmt.Errorf("the Request tab is not an AdmissionRequest: %w", err)
 	}
 
 	rbacAuthorizer, err := NewRBACAuthorizer(authorizerInput)
@@ -103,17 +111,29 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 	objectValue := unstructuredOrNil(object)
 	oldObjectValue := unstructuredOrNil(oldObject)
 	operation := admission.Operation(request.Operation)
+
+	// `request.kind` is the kind the policy matched at and `request.requestKind`
+	// the kind the client actually asked for; they differ only under
+	// matchPolicy: Equivalent. The attributes carry the request's own, and the
+	// matched one is passed alongside -- so a tab that names both is modelled
+	// rather than flattened.
+	matchedKind, matchedResource := schema.GroupVersionKind(request.Kind), schema.GroupVersionResource(request.Resource)
+	requestKind, requestResource := matchedKind, matchedResource
+	if request.RequestKind != nil {
+		requestKind = schema.GroupVersionKind(*request.RequestKind)
+	}
+	if request.RequestResource != nil {
+		requestResource = schema.GroupVersionResource(*request.RequestResource)
+	}
+
 	attributes := admission.NewAttributesRecord(
 		runtimeObject(objectValue), runtimeObject(oldObjectValue),
-		schema.GroupVersionKind(request.Kind),
-		request.Namespace, request.Name,
-		schema.GroupVersionResource(request.Resource),
-		request.SubResource, operation, operationOptions(operation),
+		requestKind, request.Namespace, request.Name, requestResource,
+		request.SubResource, operation, operationOptions(operation, request.Options),
 		request.DryRun != nil && *request.DryRun, userInfo,
 	)
 	admissionRequest := celplugin.CreateAdmissionRequest(attributes,
-		metav1.GroupVersionResource(attributes.GetResource()),
-		metav1.GroupVersionKind(attributes.GetKind()))
+		metav1.GroupVersionResource(matchedResource), metav1.GroupVersionKind(matchedKind))
 	requestMap, err := objectToMap(admissionRequest)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert the request for evaluation: %w", err)
@@ -130,15 +150,26 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 		oldObjectValue:            oldObjectValue,
 		namespace:                 namespace,
 		attributes:                attributes,
+		matchedKind:               matchedKind,
+		matchedResource:           matchedResource,
 		admissionRequest:          admissionRequest,
 		rbacAuthorizer:            rbacAuthorizer,
 	}, nil
 }
 
-// operationOptions is the options object a cluster attaches to the request for
-// each operation. An operation the Request tab does not name gets none, rather
-// than an invented CreateOptions.
-func operationOptions(operation admission.Operation) runtime.Object {
+// operationOptions is the options object a cluster attaches to the request.
+// The Request tab wins where it sets one, because that is where fieldManager
+// and fieldValidation come from and nothing here could invent them; otherwise
+// the empty options for the operation, which is what a client that sent none
+// produces. An operation the tab does not name gets nothing at all rather than
+// an invented CreateOptions.
+func operationOptions(operation admission.Operation, declared runtime.RawExtension) runtime.Object {
+	if len(declared.Raw) > 0 {
+		content := map[string]any{}
+		if err := apimachineryjson.Unmarshal(declared.Raw, &content); err == nil {
+			return &unstructured.Unstructured{Object: content}
+		}
+	}
 	switch operation {
 	case admission.Create:
 		return &metav1.CreateOptions{}

@@ -425,3 +425,99 @@ spec:
 		t.Errorf("variables reported as %v, want %v", names, want)
 	}
 }
+
+// The per-object ceiling bounds one mutation's output; nothing bounds how many
+// mutations a policy declares. A hundred of them, each echoing an object grown
+// to just under the ceiling, is megabytes of response for a kilobyte of policy
+// and a few hundred units of CEL cost -- the same attack the ceiling exists for,
+// arrived at from the other direction.
+func TestMutationBoundsWhatTheWholePolicyReports(t *testing.T) {
+	// The first mutation inflates the object by copying its spec into itself,
+	// stopping under the per-object ceiling; the rest each touch one field, so
+	// each one's output is another copy of that inflated object.
+	var copies []string
+	for i := range 8 {
+		copies = append(copies, fmt.Sprintf(`JSONPatch{op: "copy", from: "/spec", path: "/spec/x%d"}`, i))
+	}
+	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: echo\nspec:\n  failurePolicy: Ignore\n  reinvocationPolicy: Never\n  mutations:\n" +
+		"  - patchType: JSONPatch\n    jsonPatch:\n      expression: '[" + strings.Join(copies, ", ") + "]'\n"
+	const echoes = 40
+	for i := range echoes {
+		policy += fmt.Sprintf("  - patchType: JSONPatch\n    jsonPatch:\n      expression: '[JSONPatch{op: \"add\", path: \"/metadata/annotations\", value: {}}, JSONPatch{op: \"add\", path: \"/metadata/annotations/e%d\", value: \"x\"}]'\n", i)
+	}
+
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "bomb object.yaml"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.Mutations) != echoes+1 {
+		t.Fatalf("got %d mutations, want %d", len(response.Mutations), echoes+1)
+	}
+	for i, mutation := range response.Mutations {
+		if mutation.IsError {
+			t.Fatalf("mutations[%d] failed, so this case no longer produces a large response: %s", i, *mutation.Error)
+		}
+	}
+	// The policy is ~6 KB and the object 400 bytes. Without a ceiling on the
+	// whole response this is tens of megabytes.
+	if len(out) > 3*1024*1024 {
+		t.Errorf("the response is %d bytes for a %d-byte policy", len(out), len(policy))
+	}
+	if response.FinalObject == "" {
+		t.Errorf("the response was trimmed to nothing; the final object is what carries the answer")
+	}
+	withheld := 0
+	for _, mutation := range response.Mutations {
+		if mutation.MutatedObject == "" && mutation.Message != "" {
+			withheld++
+		}
+	}
+	if withheld == 0 {
+		t.Errorf("every mutation's object was reported, so nothing was bounded")
+	}
+	t.Logf("policy %d bytes, response %d bytes, %d of %d per-mutation objects withheld", len(policy), len(out), withheld, len(response.Mutations))
+}
+
+// The validating mode ignores spec.matchConstraints and spec.paramKind for the
+// same reasons the mutating one does, and has to say so in the same place. A
+// reader moving between the two modes would otherwise conclude that the one
+// that says nothing does evaluate them.
+func TestValidatingReportsWhatItDoesNotSimulate(t *testing.T) {
+	policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: caveats
+spec:
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+    - apiGroups:   ["apps"]
+      apiVersions: ["v1"]
+      operations:  ["CREATE"]
+      resources:   ["deployments"]
+  validations:
+  - expression: "true"
+`
+	out, err := k8s.EvalValidatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "object.yaml"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalValidatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	for _, want := range []string{"matchConstraints:", "paramKind:"} {
+		if !strings.Contains(response.NotSimulated, want) {
+			t.Errorf("notSimulated does not mention %q:\n%s", want, response.NotSimulated)
+		}
+	}
+	if strings.Contains(response.NotSimulated, "API defaults") {
+		t.Errorf("the validating mode claims not to default, which it has no reason to:\n%s", response.NotSimulated)
+	}
+}

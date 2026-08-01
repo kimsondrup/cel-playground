@@ -88,7 +88,13 @@ A `MutatingAdmissionPolicy` is the same idea with a different set of batches:
 `matchConditions`, then one per `spec.mutations` entry. Each mutation is patched
 on its own with a whole 10,000,000 budget of its own, so two mutations that each
 stay inside it never add up to an overrun, and a variable both of them read is
-evaluated -- and charged -- once for each.
+evaluated -- and charged -- once for each. A single expression is separately
+capped at 1,000,000 whatever the budget says.
+
+Most expressions cost tens of units. The exception is an authorizer check,
+which upstream prices at roughly 350,000 — so a policy that asks three
+authorization questions has spent a tenth of a mutation's budget, and the
+numbers in the panel jump accordingly.
 
 ## Mutating Admission Policy
 
@@ -110,7 +116,15 @@ schema it cannot resolve — and the panel says so.
 A patched built-in is read back through that schema, because a cluster decodes
 the result strictly. A misspelled field in an `Object{}` initializer or a quoted
 number written by a `JSONPatch` is refused here for the same reason it is
-refused there, rather than appearing in the output as though it had worked.
+refused there, rather than appearing in the output as though it had worked. On a
+cluster that refusal is an internal error rather than a policy failure, so
+`failurePolicy: Ignore` does not rescue it, and the decision says so.
+
+An `ApplyConfiguration` on a **custom resource** is refused rather than guessed.
+A cluster reads the CRD's schema and then either merges a list by key or refuses
+the patch outright, depending on whether the CRD declares `x-kubernetes-list-type`;
+with neither the schema nor the CRD in hand there is no answer worth giving. A
+`JSONPatch` needs no schema and works on any object.
 
 What the mode parses and does not act on is repeated on screen in a
 **notSimulated** section, so a policy that would behave differently on a cluster
@@ -119,8 +133,10 @@ never reports a confident result:
 - `matchConstraints` are parsed but not evaluated. The mutations run against
   whatever is in the Object tab, whether or not the `resourceRules` would select
   it, so only `matchConditions` stop one from running.
-- `params` has no input tab and is bound to null, exactly as on a cluster whose
-  binding selected no parameter object.
+- `params` has no input tab and is bound to null, which is what a cluster does
+  when a binding names no `paramRef`. A binding whose `paramRef` selects nothing
+  is different again: `parameterNotFoundAction` decides whether the policy is
+  skipped or the request denied.
 - `reinvocationPolicy: IfNeeded` asks for another pass once some other plugin
   has mutated the object. There is no other plugin here, so each mutation runs
   once.

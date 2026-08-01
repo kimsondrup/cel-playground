@@ -126,6 +126,7 @@ type EvalResult struct {
 type EvalMutationResult struct {
 	PatchType     string  `json:"patchType,omitempty"`
 	MutatedObject string  `json:"mutatedObject,omitempty"`
+	Message       string  `json:"message,omitempty"`
 	Cost          *uint64 `json:"cost,omitempty"`
 	Error         *string `json:"error,omitempty"`
 	IsError       bool    `json:"isError,omitempty"`
@@ -308,6 +309,14 @@ type evalSections struct {
 	// applying it. A mutation that never ran has a nil scope.
 	mutationScopes []*evalScope
 	mutations      []*EvalMutationResult
+	// mutationFatal[i] marks a failure a cluster reports as an internal error
+	// rather than one failurePolicy can excuse.
+	mutationFatal []bool
+	// mutationOverran[i] marks a mutation that ran past its cost budget.
+	mutationOverran []bool
+	// mutationsSkipped records that the mutations did not run because there was
+	// no object to mutate, which a cluster admits rather than fails.
+	mutationsSkipped bool
 
 	diff         string
 	finalObject  string
@@ -400,6 +409,14 @@ func (s *evalSections) exceededBudgets() []*EvalResult {
 	// Each mutation is patched on its own, with a whole budget each, so the
 	// mutations of one policy never share one.
 	for i := range max(len(s.mutations), len(s.mutationScopes)) {
+		if i < len(s.mutationOverran) && s.mutationOverran[i] {
+			// An overrun leaves no remaining budget to subtract, so the cost is
+			// not known -- only that it passed the ceiling.
+			name := fmt.Sprintf("mutations[%d]", i)
+			message := fmt.Sprintf("over the %d the apiserver allows; a cluster abandons the mutation and fails the request", celconfig.RuntimeCELCostBudget)
+			exceeded = append(exceeded, &EvalResult{Name: &name, IsError: true, Error: &message})
+			continue
+		}
 		report(fmt.Sprintf("mutations[%d]", i), s.mutationCost(i), celconfig.RuntimeCELCostBudget)
 	}
 	return exceeded

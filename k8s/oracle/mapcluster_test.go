@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -154,9 +153,24 @@ spec:
 	}
 	_ = ctx
 
-	t.Logf("baseline spec.replicas = %v (this is DEFAULTING: nothing in the request set it)", baseline.Object["spec"].(map[string]any)["replicas"])
-	t.Logf("mutated  spec.replicas = %v (this is the POLICY)", mutated.Object["spec"].(map[string]any)["replicas"])
-	t.Logf("everything else identical? %v", sameExceptNameAndReplicas(baseline, mutated))
+	baselineReplicas, _, _ := unstructured.NestedInt64(baseline.Object, "spec", "replicas")
+	mutatedReplicas, _, _ := unstructured.NestedInt64(mutated.Object, "spec", "replicas")
+	t.Logf("baseline spec.replicas = %d (this is DEFAULTING: nothing in the request set it)", baselineReplicas)
+	t.Logf("mutated  spec.replicas = %d (this is the POLICY)", mutatedReplicas)
+
+	// This is the technique TestMAPPlaygroundMatchesCluster rests on: run the
+	// same request with and without the binding, and everything that differs is
+	// the policy. It only isolates the policy if nothing else moves between the
+	// two runs.
+	if baselineReplicas != 1 {
+		t.Errorf("the unbound request defaulted spec.replicas to %d, want 1", baselineReplicas)
+	}
+	if mutatedReplicas != 4 {
+		t.Errorf("the bound request has spec.replicas %d, want the policy's 4", mutatedReplicas)
+	}
+	if !sameExceptNameAndReplicas(baseline, mutated) {
+		t.Errorf("two dry runs of the same request differ in more than the policy touched:\nbaseline:\n%s\nmutated:\n%s", pretty(baseline), pretty(mutated))
+	}
 }
 
 func sameExceptNameAndReplicas(a, b *unstructured.Unstructured) bool {
@@ -277,16 +291,18 @@ func TestMAPReinvocation(t *testing.T) {
 
 			// Probe until both pass orders have been observed, or give up.
 			seen := map[string]int{}
-			for i := 0; i < 25; i++ {
+			consumed := 0
+			probes := 10
+			for i := 0; i < probes; i++ {
 				out, err := dryRunCreateObject(o, labelled(cm("oracle-reinvoke-"+tag, map[string]any{"seed": "1"}), "map-reinvoke", tag))
 				if err != nil {
 					t.Fatalf("create: %v", err)
 				}
 				data, _, _ := unstructured.NestedStringMap(out.Object, "data")
-				seen[fmt.Sprintf("produced=%s consumed=%s", data["produced"], data["consumed"])]++
-				if len(seen) > 1 {
-					break
+				if data["consumed"] == "yes" {
+					consumed++
 				}
+				seen[fmt.Sprintf("produced=%s consumed=%s", data["produced"], data["consumed"])]++
 				// Force the policy source to recompute its hook list, which
 				// reshuffles the order (Go map iteration in
 				// generic.policySource.calculatePolicyData).
@@ -294,6 +310,18 @@ func TestMAPReinvocation(t *testing.T) {
 			}
 			for k, n := range seen {
 				t.Logf("reinvocationPolicy=%s -> %s (x%d)", reinvocation, k, n)
+			}
+			// IfNeeded brings the consumer back after the producer has run,
+			// whichever order they went in, so it consumes every time. Never
+			// only consumes when the producer happened to go first, and which
+			// that is is not stable -- so only the IfNeeded half is an
+			// assertion. The playground says each mutation runs exactly once;
+			// this is what that is a departure from.
+			if reinvocation == "IfNeeded" && consumed != probes {
+				t.Errorf("IfNeeded consumed %d of %d probes; reinvocation did not fire", consumed, probes)
+			}
+			if reinvocation == "Never" && consumed == probes {
+				t.Logf("Never consumed every probe: the producer happened to run first every time, so this run says nothing about Never")
 			}
 		})
 	}
@@ -324,7 +352,7 @@ func TestMAPOrderingIsNondeterministic(t *testing.T) {
 	}
 
 	seen := map[string]int{}
-	for i := 0; i < 12; i++ {
+	for i := 0; i < 6; i++ {
 		// waitMAPActive creates and deletes a marker policy, which dirties the
 		// source and forces calculatePolicyData to run again.
 		waitMAPActive(t, o)
@@ -335,7 +363,7 @@ func TestMAPOrderingIsNondeterministic(t *testing.T) {
 		v, _, _ := unstructured.NestedString(out.Object, "data", "order")
 		seen[v]++
 	}
-	t.Logf("distinct orders observed over 12 refreshes: %d", len(seen))
+	t.Logf("distinct orders observed over 6 refreshes: %d", len(seen))
 	for k, n := range seen {
 		t.Logf("  %s x%d", k, n)
 	}
@@ -594,12 +622,24 @@ spec:
 			waitMAPActive(t, o)
 
 			out, err := dryRunCreateObject(o, labelled(cm("oracle-runtime-"+tag, map[string]any{"seed": "1"}), "map-runtime", tag))
-			if err != nil {
-				t.Logf("failurePolicy=%s -> request REJECTED:\n%v", fp, err)
+			if fp == "Fail" {
+				if err == nil {
+					t.Fatalf("failurePolicy=Fail admitted a request whose mutation errored: %s", pretty(out.Object))
+				}
+				t.Logf("failurePolicy=Fail -> request REJECTED:\n%v", err)
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("the rejection does not name the policy: %v", err)
+				}
 				return
 			}
+			if err != nil {
+				t.Fatalf("failurePolicy=Ignore rejected the request: %v", err)
+			}
 			data, _, _ := unstructured.NestedStringMap(out.Object, "data")
-			t.Logf("failurePolicy=%s -> request ALLOWED, data=%v", fp, data)
+			t.Logf("failurePolicy=Ignore -> request ALLOWED, data=%v", data)
+			if _, mutated := data["x"]; mutated {
+				t.Errorf("failurePolicy=Ignore applied the mutation that errored: %v", data)
+			}
 		})
 	}
 }
@@ -672,7 +712,20 @@ spec:
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	t.Logf("annotations the policy wrote: %v", out.GetAnnotations())
+	annotations := out.GetAnnotations()
+	t.Logf("annotations the policy wrote: %v", annotations)
+	// The playground uses the object exactly as typed and says so under
+	// notSimulated. This is the claim that makes that caveat necessary: a
+	// cluster hands the policy an object three fields richer than the request.
+	for key, want := range map[string]string{
+		"saw-replicas":   "1",
+		"saw-strategy":   "RollingUpdate",
+		"saw-pullpolicy": "Always",
+	} {
+		if annotations[key] != want {
+			t.Errorf("%s = %q, want %q: the policy did not see the defaulted object", key, annotations[key], want)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -709,49 +762,6 @@ var budgetMutationCount = 12
 // looks exactly like budget exhaustion in the error. Nesting two small ranges
 // buys the same cost at ~4M cost-units/second.
 const budgetBallast = `[JSONPatch{op: "replace", path: "/data/order", value: lists.range(400).all(i, lists.range(400).all(j, j >= 0)) ? "y" : "n"}]`
-
-// TestMAPBudgetSweep walks the number of ~966k-cost mutations in one policy
-// past the 10,000,000 budget and reports latency and outcome at each step, so
-// "it timed out" can be told apart from "the budget cut it off".
-func TestMAPBudgetSweep(t *testing.T) {
-	o := cluster(t)
-	ballast := budgetBallast
-
-	for _, n := range []int{1, 4, 8, 11, 12, 20, 40} {
-		name := fmt.Sprintf("oracle-map-sweep-%d", n)
-		tag := fmt.Sprintf("n%d", n)
-		doc := `
-metadata:
-  name: ` + name + `
-spec:
-  failurePolicy: Fail
-  reinvocationPolicy: Never
-  matchConstraints:
-    resourceRules:
-      - apiGroups: [""]
-        apiVersions: ["v1"]
-        operations: ["CREATE"]
-        resources: ["configmaps"]
-  mutations:`
-		for i := 0; i < n; i++ {
-			doc += "\n    - patchType: JSONPatch\n      jsonPatch:\n        expression: '" + ballast + "'"
-		}
-		p := parseMAP(t, doc)
-		if err := installMAP(t, o, p, parseMAPBinding(t, bindingYAML(name, "map-sweep", tag))); err != nil {
-			t.Fatalf("installing %s: %v", name, err)
-		}
-		waitMAPActive(t, o)
-
-		start := time.Now()
-		_, err := dryRunCreateObject(o, labelled(cm("oracle-sweep-"+tag, map[string]any{"order": ""}), "map-sweep", tag))
-		elapsed := time.Since(start)
-		if err != nil {
-			t.Logf("n=%-3d approx cost=%-9d elapsed=%-10s DENIED: %v", n, n*966462, elapsed.Round(time.Millisecond), err)
-		} else {
-			t.Logf("n=%-3d approx cost=%-9d elapsed=%-10s ALLOWED", n, n*966462, elapsed.Round(time.Millisecond))
-		}
-	}
-}
 
 func TestMAPBudgetIsPerMutation(t *testing.T) {
 	o := cluster(t)

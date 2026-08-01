@@ -30,7 +30,9 @@ import (
 	celplugin "k8s.io/apiserver/pkg/admission/plugin/cel"
 	"k8s.io/apiserver/pkg/admission/plugin/policy/mutating/patch"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
+	apiservercel "k8s.io/apiserver/pkg/cel"
 	"k8s.io/apiserver/pkg/cel/environment"
+	"sigs.k8s.io/structured-merge-diff/v6/typed"
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
@@ -51,6 +53,16 @@ const maxMutatedObjectBytes = 1024 * 1024
 // maxAccumulatedCopyBytes is how much one patch may grow a document by copying
 // parts of it. It is JSONPatchMaxCopyBytes, the apiserver's own default.
 const maxAccumulatedCopyBytes = 3 * 1024 * 1024
+
+// maxReportedObjectBytes bounds each of the three things the result carries
+// besides the expressions: the per-mutation trace, the object at the end, and
+// the diff between them. Only the object itself is bounded by
+// maxMutatedObjectBytes; nothing bounds how many mutations a policy declares,
+// so a hundred of them each echoing an object grown to just under the ceiling
+// is megabytes of response for a kilobyte of policy and a few hundred units of
+// CEL cost. With this the response is a constant multiple of one object rather
+// than a multiple of the policy's length.
+const maxReportedObjectBytes = maxMutatedObjectBytes
 
 func init() {
 	// A patch may copy a subtree into itself, which doubles the document, and
@@ -137,7 +149,11 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 	}
 	object := inputs.objectValue
 	if object == nil {
-		s.failEveryMutation(celInfo, errNoObject)
+		// The dispatcher skips a patcher when there is no object to patch and
+		// admits the request, so this is not a failure -- but it is almost
+		// always a blank Object tab rather than a DELETE, so each mutation says
+		// what to do about it.
+		s.skipEveryMutation(celInfo, errNoObject.Error())
 		return
 	}
 	gvk := object.GroupVersionKind()
@@ -147,19 +163,14 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 	}
 
 	typeConverter, schemaBacked := typeConverterFor(gvk)
-	if !schemaBacked && hasApplyConfiguration(celInfo) {
-		s.warnings = append(s.warnings, fmt.Sprintf(
-			"There is no merge schema for %s here, so an ApplyConfiguration is merged as if every "+
-				"list were atomic: a mutation that adds one list entry replaces the whole list "+
-				"instead of merging it by key. The playground carries the schemas of the built-in "+
-				"Kubernetes APIs only; a cluster would use the one it serves for %s.",
-			gvk.GroupVersion(), gvk.Kind))
-	}
 	// Whether the pasted object itself fits the schema decides how a patched
 	// one is read below: a mutation must not be blamed for a field it inherited.
 	objectFitsSchema := schemaBacked
 	if schemaBacked {
-		if _, err := typeConverter.ObjectToTyped(object); err != nil {
+		// AllowDuplicates because that is what ApplyStructuredMergeDiff parses
+		// the live object with; being stricter here would report a schema
+		// mismatch the merge itself is happy with.
+		if _, err := typeConverter.ObjectToTyped(object, typed.AllowDuplicates); err != nil {
 			objectFitsSchema = false
 			s.warnings = append(s.warnings, fmt.Sprintf(
 				"The object does not fit the %s schema: %v. A cluster would reject it before any "+
@@ -169,7 +180,7 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 
 	versionedAttributes := &admission.VersionedAttributes{
 		Attributes:         inputs.attributes,
-		VersionedKind:      inputs.attributes.GetKind(),
+		VersionedKind:      inputs.matchedKind,
 		VersionedObject:    object,
 		VersionedOldObject: runtimeObject(inputs.oldObjectValue),
 	}
@@ -188,15 +199,36 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		return
 	}
 	current, mutated := original, false
+	// Every mutation's output is carried back to the browser, and the per-object
+	// ceiling below bounds one of them, not their sum. A policy may declare as
+	// many mutations as it likes, and each one echoes the object again.
+	reported := len(original)
 
 	for _, mutation := range celInfo.mutations {
 		result := &EvalMutationResult{PatchType: string(mutation.patchType)}
 		s.mutations = append(s.mutations, result)
 		s.mutationScopes = append(s.mutationScopes, nil)
+		s.mutationFatal = append(s.mutationFatal, false)
+		s.mutationOverran = append(s.mutationOverran, false)
 
 		accessor, newPatcher, err := mutationPatcher(mutation)
 		if err != nil {
 			setMutationError(result, err)
+			continue
+		}
+		// A merge needs the schema of the type it is merging into, and for a
+		// custom resource a cluster reads that from the CRD. Without it there is
+		// no honest answer: a CRD that declares listType=map merges by key, and
+		// one that declares nothing has an atomic list, which upstream's
+		// validatePatch refuses outright. Guessing either way would report a
+		// result a cluster contradicts.
+		if !schemaBacked && mutation.patchType == admissionregistrationv1.PatchTypeApplyConfiguration {
+			setMutationError(result, fmt.Errorf(
+				"there is no merge schema for %s here, so what an ApplyConfiguration does to it cannot be "+
+					"answered: a cluster reads the schema from the CustomResourceDefinition, and merges by "+
+					"key or refuses the patch as atomic depending on what it says. The playground carries "+
+					"the schemas of the built-in Kubernetes APIs only; a JSONPatch needs none and still works",
+				gvk.GroupVersion()))
 			continue
 		}
 		evaluator := compiler.compiler.CompileMutatingEvaluator(accessor, patchDeclarations, environment.NewExpressions)
@@ -218,7 +250,7 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		s.mutationScopes[len(s.mutationScopes)-1] = scope.scope
 		metered := &meteredEvaluator{MutatingEvaluator: evaluator}
 		patched, err := newPatcher(metered).Patch(scope, patch.Request{
-			MatchedResource:     inputs.attributes.GetResource(),
+			MatchedResource:     inputs.matchedResource,
 			VersionedAttributes: versionedAttributes,
 			ObjectInterfaces:    objectInterfaces,
 			OptionalVariables:   bindings,
@@ -232,6 +264,10 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 			result.Cost = &expressionCost
 		}
 		if err != nil {
+			// A budget overrun reports no remaining budget, so there is no cost
+			// to show -- and it is the one failure the budget section exists
+			// for, which would otherwise say nothing.
+			s.mutationOverran[len(s.mutationOverran)-1] = errors.Is(err, apiservercel.ErrOutOfBudget)
 			setMutationError(result, err)
 			continue
 		}
@@ -244,8 +280,14 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		// unstructured branch and never makes that check; without this the
 		// object comes back with `replicas: "10"` and nothing says a cluster
 		// would have refused it.
+		//
+		// It is not a failure failurePolicy can excuse: a patched object the
+		// apiserver cannot decode comes back as a StatusError, and the
+		// dispatcher returns those rather than collecting them, so they never
+		// reach the failurePolicy filter.
 		if objectFitsSchema {
 			if _, err := typeConverter.ObjectToTyped(patched); err != nil {
+				s.mutationFatal[len(s.mutationFatal)-1] = true
 				setMutationError(result, fmt.Errorf(
 					"a cluster reads the patched object back against the %s schema and would refuse it: %w", gvk.Kind, err))
 				continue
@@ -270,9 +312,20 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 			continue
 		}
 
-		result.MutatedObject = mutatedYAML
 		current, mutated = mutatedYAML, true
 		versionedAttributes.VersionedObject = patched
+		// The object is applied whatever happens; what is bounded is how much of
+		// it travels back. Past the ceiling the trace is dropped and the final
+		// object below carries the answer on its own.
+		if reported+len(mutatedYAML) > maxReportedObjectBytes {
+			result.Message = fmt.Sprintf(
+				"applied, and not shown: the objects this policy has produced come to more than the %d bytes "+
+					"the playground will send back. The final object below is what the last mutation left.",
+				maxReportedObjectBytes)
+			continue
+		}
+		reported += len(mutatedYAML)
+		result.MutatedObject = mutatedYAML
 	}
 
 	if !mutated {
@@ -281,7 +334,15 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		return
 	}
 	s.finalObject = current
-	s.diff = unifiedDiff(original, current, "object", "mutated")
+	// The diff of two objects near the ceiling is larger than either of them,
+	// and it is the least useful of the three when it is that big.
+	if diff := unifiedDiff(original, current, "object", "mutated"); len(diff) <= maxReportedObjectBytes {
+		s.diff = diff
+	} else {
+		s.warnings = append(s.warnings, fmt.Sprintf(
+			"The object changed by more than the %d bytes of diff the playground will send back, so no "+
+				"diff is shown. The object at the end is below.", maxReportedObjectBytes))
+	}
 }
 
 // meteredEvaluator records what one mutation's expression cost.
@@ -313,6 +374,19 @@ func (s *evalSections) failEveryMutation(celInfo *CelInformation, err error) {
 		result := &EvalMutationResult{PatchType: string(mutation.patchType)}
 		setMutationError(result, err)
 		s.mutations = append(s.mutations, result)
+		s.mutationFatal = append(s.mutationFatal, false)
+	}
+}
+
+// skipEveryMutation reports that no mutation ran, without calling it a failure.
+func (s *evalSections) skipEveryMutation(celInfo *CelInformation, message string) {
+	s.mutationsSkipped = true
+	for _, mutation := range celInfo.mutations {
+		s.mutations = append(s.mutations, &EvalMutationResult{
+			PatchType: string(mutation.patchType),
+			Message:   message,
+		})
+		s.mutationFatal = append(s.mutationFatal, false)
 	}
 }
 
@@ -372,13 +446,13 @@ func marshalObjectYAML(object runtime.Object) (string, error) {
 func notSimulated(celInfo *CelInformation) string {
 	var lines []string
 	if celInfo.hasMatchConstraints {
-		lines = append(lines, "matchConstraints: the mutations run against whatever is in the Object "+
-			"tab, whether or not the resourceRules would select it. Only matchConditions stop a "+
-			"mutation from running here.")
+		lines = append(lines, matchConstraintsCaveat(len(celInfo.mutations) > 0))
 	}
 	if celInfo.hasParams {
 		lines = append(lines, "paramKind: there is no params tab, so params is bound to null -- the "+
-			"state a cluster reaches when a binding's paramRef selects nothing.")
+			"state a cluster reaches when a binding names no paramRef at all. A binding whose paramRef "+
+			"selects nothing behaves differently again: it either skips the policy or denies the "+
+			"request, depending on parameterNotFoundAction.")
 	}
 	if celInfo.reinvocationPolicy == admissionregistrationv1.IfNeededReinvocationPolicy {
 		lines = append(lines, "reinvocationPolicy: IfNeeded asks for another pass once other plugins "+
@@ -388,6 +462,34 @@ func notSimulated(celInfo *CelInformation) string {
 		lines = append(lines, "API defaults: the object is used exactly as typed. A cluster defaults it "+
 			"before admission and again after every mutation, so a field like imagePullPolicy is "+
 			"already set there and a !has(...) guard can fire here where it would not.")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// matchConstraintsCaveat is shared with the validating mode: neither evaluates
+// spec.matchConstraints, because matching needs the request's resource -- the
+// plural -- and nothing in a browser can derive `deployments` from
+// `kind: Deployment` without discovery.
+func matchConstraintsCaveat(mutating bool) string {
+	acts, gate := "validations run", "validation"
+	if mutating {
+		acts, gate = "mutations run", "mutation"
+	}
+	return "matchConstraints: the " + acts + " against whatever is in the Object tab, whether or not " +
+		"the resourceRules would select it. Only matchConditions stop a " + gate + " from running here."
+}
+
+// validatingNotSimulated is the validating mode's half of the same list.
+func validatingNotSimulated(celInfo *CelInformation) string {
+	var lines []string
+	if celInfo.hasMatchConstraints {
+		lines = append(lines, matchConstraintsCaveat(false))
+	}
+	if celInfo.hasParams {
+		lines = append(lines, "paramKind: there is no params tab, so params is bound to null -- the "+
+			"state a cluster reaches when a binding names no paramRef at all. A binding whose paramRef "+
+			"selects nothing behaves differently again: it either skips the policy or denies the "+
+			"request, depending on parameterNotFoundAction.")
 	}
 	return strings.Join(lines, "\n")
 }

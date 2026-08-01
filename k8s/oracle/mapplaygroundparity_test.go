@@ -27,7 +27,6 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/managedfields"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"sigs.k8s.io/yaml"
@@ -77,11 +76,15 @@ func TestMAPPlaygroundMatchesUpstream(t *testing.T) {
 		"chained":             {policy: "chained policy.yaml", object: "object.yaml"},
 		"jsonpatch ops":       {policy: "jsonpatch ops policy.yaml", object: "object.yaml"},
 		"jsonpatch escapekey": {policy: "jsonpatch escapekey policy.yaml", object: "object.yaml"},
-		"crd":                 {policy: "crd policy.yaml", object: "crd object.yaml"},
-		"crd jsonpatch":       {policy: "crd jsonpatch policy.yaml", object: "crd object.yaml"},
-		"yaml keys":           {policy: "yaml keys policy.yaml", object: "yaml keys object.yaml"},
-		"v1alpha1":            {policy: "v1alpha1 policy.yaml", object: "object.yaml"},
-		"v1beta1":             {policy: "v1beta1 policy.yaml", object: "object.yaml"},
+		// Neither side has the CRD's schema, and neither guesses: client-go's
+		// converter refuses an unregistered kind and the playground refuses the
+		// merge. A cluster reads the schema from the CustomResourceDefinition
+		// and answers, which is the one thing this comparison cannot reach.
+		"crd":           {policy: "crd policy.yaml", object: "crd object.yaml", wantFailures: 1},
+		"crd jsonpatch": {policy: "crd jsonpatch policy.yaml", object: "crd object.yaml"},
+		"yaml keys":     {policy: "yaml keys policy.yaml", object: "yaml keys object.yaml"},
+		"v1alpha1":      {policy: "v1alpha1 policy.yaml", object: "object.yaml"},
+		"v1beta1":       {policy: "v1beta1 policy.yaml", object: "object.yaml"},
 		"context": {
 			policy: "context policy.yaml", object: "object.yaml",
 			oldObject: "context oldobject.yaml", request: "context request.yaml", rbac: "context rbac.yaml",
@@ -164,8 +167,14 @@ func errorText(err *string) string {
 
 // sharesReason reports whether two failure messages are about the same thing.
 // structured-merge-diff's own wording is the part that has to match; what the
-// playground adds around it is its own.
+// playground adds around it is its own. A missing schema is the exception:
+// upstream says the kind is not registered in its scheme and the playground
+// says it carries no schema for the group-version, which is the same absence
+// described from either side.
 func sharesReason(playground, upstream string) bool {
+	if strings.Contains(upstream, "is registered for version") && strings.Contains(playground, "no merge schema") {
+		return true
+	}
 	if strings.Contains(playground, upstream) || strings.Contains(upstream, playground) {
 		return true
 	}
@@ -265,20 +274,7 @@ func runUpstreamMutation(t *testing.T, tc mapParityCase) oracle.MutationResult {
 		request.Authorizer = authorizer
 	}
 
-	// The same choice the playground makes: the generated schema for a kind it
-	// knows, the deduced converter for a custom resource. client-go's converter
-	// refuses an unregistered kind outright, where a cluster would fetch the
-	// CRD's own schema -- neither side of this comparison can do that, so both
-	// fall back the same way and the fixture records what the fallback costs.
-	typeConverter := oracle.StaticTypeConverter()
-	if request.Object != nil {
-		stub := &unstructured.Unstructured{}
-		stub.SetGroupVersionKind(request.Object.GroupVersionKind())
-		if _, err := typeConverter.ObjectToTyped(stub); err != nil {
-			typeConverter = managedfields.NewDeducedTypeConverter()
-		}
-	}
-	result, err := oracle.MutateInProcess(context.Background(), policy, request, typeConverter)
+	result, err := oracle.MutateInProcess(context.Background(), policy, request, oracle.StaticTypeConverter())
 	if err != nil {
 		t.Fatalf("upstream refused the fixture: %v", err)
 	}

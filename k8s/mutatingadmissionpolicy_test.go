@@ -132,20 +132,22 @@ func TestMutationEval(t *testing.T) {
 		},
 		decision: "admitted: every mutation ran, and the object is mutated",
 	}, {
-		// No schema for a custom resource, so the deduced converter merges every
-		// list atomically and the existing part is replaced rather than kept.
-		// That is what a cluster does when it cannot resolve a schema, and the
-		// warning is the only thing that says so.
-		name:    "a custom resource has no merge schema, and says so",
-		policy:  "crd policy.yaml",
-		object:  "crd object.yaml",
-		mutated: "crd mutated.yaml",
+		// An ApplyConfiguration merges, and merging needs the schema of the
+		// target type. A cluster reads a custom resource's from its CRD, and
+		// merges by key or refuses the patch as atomic depending on what it
+		// says; with neither in hand there is no answer to give.
+		name:   "an ApplyConfiguration on a custom resource is refused, not guessed",
+		policy: "crd policy.yaml",
+		object: "crd object.yaml",
 		expected: k8s.EvalResponse{
-			Mutations: []*k8s.EvalMutationResult{{PatchType: "ApplyConfiguration", Cost: uint64ptr(130)}},
-			Cost:      uint64ptr(130),
+			Mutations: []*k8s.EvalMutationResult{{
+				PatchType: "ApplyConfiguration",
+				IsError:   true,
+				Error:     strptr("there is no merge schema for example.com/v1 here, so what an ApplyConfiguration does to it cannot be answered: a cluster reads the schema from the CustomResourceDefinition, and merges by key or refuses the patch as atomic depending on what it says. The playground carries the schemas of the built-in Kubernetes APIs only; a JSONPatch needs none and still works"),
+			}},
+			Cost: uint64ptr(0),
 		},
-		decision: "admitted: every mutation ran, and the object is mutated",
-		warnings: []string{"There is no merge schema for example.com/v1"},
+		decision: "rejected: mutations[0] failed and failurePolicy is Fail, so the request is denied and nothing is applied",
 	}, {
 		// A JSONPatch does not merge, so it needs no schema and is not warned
 		// about on a custom resource.
@@ -236,7 +238,7 @@ func TestMutationEval(t *testing.T) {
 			}},
 			Cost: uint64ptr(50),
 		},
-		decision: "rejected: mutations[0] failed and failurePolicy is Fail, so the request is denied and nothing is applied",
+		decision: "rejected: mutations[0] produced an object the apiserver cannot decode, which fails the request whatever failurePolicy says",
 	}, {
 		// Object{} has no compile-time field checking, so a misspelled field
 		// reaches the merge. The schema is what catches it, as on a cluster.
@@ -272,7 +274,7 @@ func TestMutationEval(t *testing.T) {
 			}},
 			Cost: uint64ptr(130),
 		},
-		decision: "admitted: mutations[0] failed but failurePolicy is Ignore, so it is skipped",
+		decision: "rejected: mutations[0] produced an object the apiserver cannot decode, which fails the request whatever failurePolicy says",
 	}, {
 		name:    "a v1alpha1 policy evaluates as its v1 self",
 		policy:  "v1alpha1 policy.yaml",
@@ -324,17 +326,20 @@ func TestMutationEval(t *testing.T) {
 		},
 		decision: "admitted: every mutation ran, and the object is mutated",
 	}, {
-		name:   "a policy with no object to mutate says so",
+		// The dispatcher skips a patcher when there is no object -- a DELETE
+		// carries none -- and the request goes through, so this is not a
+		// failure. It is still nearly always a blank Object tab, so the row
+		// says what to do about it.
+		name:   "a request with no object mutates nothing and is admitted",
 		policy: "applyconfig label policy.yaml",
 		expected: k8s.EvalResponse{
 			Mutations: []*k8s.EvalMutationResult{{
 				PatchType: "ApplyConfiguration",
-				IsError:   true,
-				Error:     strptr("a mutation needs something to mutate: paste the object the policy acts on into the Object tab"),
+				Message:   "a mutation needs something to mutate: paste the object the policy acts on into the Object tab",
 			}},
 			Cost: uint64ptr(0),
 		},
-		decision: "rejected: mutations[0] failed and failurePolicy is Fail, so the request is denied and nothing is applied",
+		decision: "admitted: the request carries no object, so no mutation ran",
 	}}
 
 	for _, tt := range tests {
