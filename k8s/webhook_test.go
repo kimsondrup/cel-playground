@@ -136,6 +136,18 @@ func TestWebhookEval(t *testing.T) {
 			Cost: uint64ptr(350017),
 		},
 	}, {
+		// A MutatingWebhookConfiguration carries matchConditions of the same
+		// shape and is evaluated the same way; only the kind differs.
+		name:    "test a mutating webhook configuration",
+		webhook: "webhook6.yaml",
+		updated: "updated2.yaml",
+		expected: k8s.EvalResponse{
+			WebhookMatchConditions: [][]*k8s.EvalResult{{
+				{Name: strptr("exclude-bootcamp"), Result: false, Cost: uint64ptr(6)},
+			}},
+			Cost: uint64ptr(6),
+		},
+	}, {
 		// The object is decoded the way a cluster decodes it. `eviction: on` is
 		// YAML 1.1, so it reaches CEL as a bool rather than the string "on" --
 		// the first match condition fails without that coercion. The second
