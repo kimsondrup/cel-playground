@@ -32,7 +32,8 @@ import (
 //	'object'          - the object from the incoming request; null for DELETE.
 //	'oldObject'       - the existing object; null for CREATE.
 //	'request'         - the AdmissionRequest attributes.
-//	'params'          - not exposed yet; the playground has no params tab.
+//	'params'          - declared when the policy declares spec.paramKind, and null:
+//	                    the playground has no params tab.
 //	'namespaceObject' - the namespace of the incoming object; null when cluster-scoped.
 //	'variables'       - spec.variables, lazily evaluated, e.g. variables.foo.
 //	'authorizer'      - a CEL Authorizer backed by the RBAC tab.
@@ -69,7 +70,7 @@ func EvalValidatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput
 		return "", err
 	}
 
-	compiler, err := newPolicyCompiler(celInfo.variables)
+	compiler, err := newPolicyCompiler(celInfo)
 	if err != nil {
 		return "", err
 	}
@@ -79,7 +80,7 @@ func EvalValidatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput
 	if len(celInfo.matchConditions) > 0 {
 		scope := newMatchConditionScope(inputs)
 		for _, matchCondition := range celInfo.matchConditions {
-			response := scope.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}, declsWithAuthorizer)
+			response := scope.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}, declsFor(celInfo.hasParams))
 			if response.isError() || response.val == nil || response.val.Value() != true {
 				matched = false
 			}
@@ -107,7 +108,7 @@ func (s *evalSections) evaluatePolicy(compiler *policyCompiler, inputs *evalInpu
 	validationScope := compiler.newScope(inputs, validationBindings)
 	s.validationScope = validationScope
 	for _, validation := range celInfo.validations {
-		s.validations = append(s.validations, validationScope.evalExpression("", &validationExpression{expression: validation.expression}, declsWithAuthorizer))
+		s.validations = append(s.validations, validationScope.evalExpression("", &validationExpression{expression: validation.expression}, declsFor(celInfo.hasParams)))
 	}
 
 	messages := s.evaluateMessageExpressions(compiler, inputs, celInfo)
@@ -124,7 +125,7 @@ func (s *evalSections) evaluatePolicy(compiler *policyCompiler, inputs *evalInpu
 		auditScope := compiler.newScope(inputs, auditAnnotationBindings)
 		s.auditAnnotationScope = auditScope
 		for _, auditAnnotation := range celInfo.auditAnnotations {
-			response := auditScope.evalExpression(auditAnnotation.key, &auditAnnotationExpression{expression: auditAnnotation.expression}, declsWithAuthorizer)
+			response := auditScope.evalExpression(auditAnnotation.key, &auditAnnotationExpression{expression: auditAnnotation.expression}, declsFor(celInfo.hasParams))
 			if !response.isError() {
 				response.messageVal, response.val = response.val, nil
 			}
@@ -147,7 +148,7 @@ func (s *evalSections) evaluateMessageExpressions(compiler *policyCompiler, inpu
 		if s.messageScope == nil {
 			s.messageScope = compiler.newScope(inputs, messageBindings)
 		}
-		messages[i] = s.messageScope.evalExpression(fmt.Sprintf("validations[%d]", i), &messageExpression{expression: validation.messageExpression}, declsWithoutAuthorizer)
+		messages[i] = s.messageScope.evalExpression(fmt.Sprintf("validations[%d]", i), &messageExpression{expression: validation.messageExpression}, declsForMessage(celInfo.hasParams))
 	}
 	if s.messageScope != nil {
 		s.messageExpressions = messages

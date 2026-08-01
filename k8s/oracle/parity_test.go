@@ -468,3 +468,51 @@ spec:
 		t.Errorf("upstream failed for an unexpected reason: %s", result.AuditAnnotations[0].Error)
 	}
 }
+
+// `params` is declared for a policy's expressions exactly when the policy
+// declares spec.paramKind. The playground has no params tab, so it binds null,
+// which is a state a cluster reaches whenever a binding's paramRef selects
+// nothing. Both sides must compile the policy and agree on the value.
+func TestParamsFollowParamKind(t *testing.T) {
+	const source = `
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: params-follow-paramkind
+spec:
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  validations:
+    - expression: "params == null"
+`
+	object := "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: d\n  namespace: default\n"
+
+	out, err := k8s.EvalValidatingAdmissionPolicy([]byte(source), nil, []byte(object), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("playground eval: %v", err)
+	}
+	playground := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &playground); err != nil {
+		t.Fatalf("decoding the playground response: %v", err)
+	}
+	if len(playground.Validations) != 1 || playground.Validations[0].IsError || playground.Validations[0].Result != true {
+		t.Fatalf("the playground did not evaluate `params == null` to true: %s", out)
+	}
+
+	policy, err := oracle.ParsePolicy(source)
+	if err != nil {
+		t.Fatalf("parsing the policy: %v", err)
+	}
+	obj, err := oracle.ParseUnstructured(object)
+	if err != nil {
+		t.Fatalf("parsing the object: %v", err)
+	}
+	result, err := oracle.Evaluate(context.Background(), policy, oracle.InProcessRequest{Object: obj})
+	if err != nil {
+		t.Fatalf("upstream evaluate: %v", err)
+	}
+	if len(result.Decisions) != 1 || result.Decisions[0].Evaluation != "admit" {
+		t.Errorf("upstream did not admit: %s", oracle.FormatResult(result))
+	}
+}

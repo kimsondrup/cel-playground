@@ -47,7 +47,7 @@ func EvalWebhook(webhookInput, oldObjectInput, objectValueInput, requestInput, a
 		matchConditionsEval := evalResponses{}
 		for _, matchCondition := range webhookMatchConditions {
 			matchConditionsEval = append(matchConditionsEval,
-				scope.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}, declsWithAuthorizer))
+				scope.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}, declsFor(false)))
 		}
 		sections.webhookMatchConditions = append(sections.webhookMatchConditions, matchConditionsEval)
 	}

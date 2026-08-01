@@ -45,6 +45,9 @@ type CelMatchConditionsInfo struct {
 }
 
 type CelInformation struct {
+	// hasParams follows spec.paramKind, which is what decides whether `params`
+	// is declared for a policy's expressions.
+	hasParams              bool
 	variables              []CelVariableInfo
 	validations            []CelValidationInfo
 	auditAnnotations       []CelAuditAnnotationsInfo
@@ -190,6 +193,7 @@ func extractPolicyCelInformation(policy *admissionregistrationv1.ValidatingAdmis
 	}
 
 	return &CelInformation{
+		hasParams:        policy.Spec.ParamKind != nil,
 		variables:        variables,
 		validations:      validations,
 		auditAnnotations: auditAnnotations,

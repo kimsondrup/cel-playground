@@ -406,3 +406,52 @@ spec:
 		t.Errorf("exceededBudgets[0] = %+v, want an error naming the 2500000 budget", exceeded)
 	}
 }
+
+// The apiserver declares `params` for a policy's expressions exactly when the
+// policy declares spec.paramKind, so a policy that has one must compile here
+// rather than be rejected for naming a variable a cluster would have declared.
+func TestParamsAreDeclaredWithParamKind(t *testing.T) {
+	policy := func(paramKind string) string {
+		return `
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: p
+spec:` + paramKind + `
+  validations:
+    - expression: "params == null"
+`
+	}
+	object := []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: d\n")
+
+	withKind := `
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap`
+	out, err := EvalValidatingAdmissionPolicy([]byte(policy(withKind)), nil, object, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalValidatingAdmissionPolicy() error: %v", err)
+	}
+	response := EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.Validations) != 1 || response.Validations[0].IsError {
+		t.Errorf("a policy with paramKind did not compile: %s", out)
+	}
+
+	// Without one, naming `params` is the compilation error a cluster reports.
+	out, err = EvalValidatingAdmissionPolicy([]byte(policy("")), nil, object, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalValidatingAdmissionPolicy() error: %v", err)
+	}
+	response = EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.Validations) != 1 || !response.Validations[0].IsError {
+		t.Errorf("a policy without paramKind compiled a reference to params: %s", out)
+	} else if !strings.Contains(*response.Validations[0].Error, "undeclared reference to 'params'") {
+		t.Errorf("unexpected error: %s", *response.Validations[0].Error)
+	}
+}

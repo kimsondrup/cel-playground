@@ -103,17 +103,25 @@ func (e *variableExpression) ReturnTypes() []*celgo.Type {
 	return []*celgo.Type{celgo.AnyType, celgo.DynType}
 }
 
-// declsWithAuthorizer is what everything except a messageExpression is compiled
-// with: matchConditions, validations and audit annotations in a policy, and a
-// webhook's matchConditions. HasParams stays false until the playground grows a
-// params input tab.
-var declsWithAuthorizer = celplugin.OptionalVariableDeclarations{HasAuthorizer: true}
+// declsFor returns the declarations everything except a messageExpression is
+// compiled with: matchConditions, validations and audit annotations in a
+// policy, and a webhook's matchConditions.
+//
+// `params` is declared exactly when the policy declares spec.paramKind, which
+// is the rule the apiserver applies. The playground has no params tab, so it is
+// declared and left null -- a state a cluster reaches too, when the binding's
+// paramRef selects nothing.
+func declsFor(hasParams bool) celplugin.OptionalVariableDeclarations {
+	return celplugin.OptionalVariableDeclarations{HasParams: hasParams, HasAuthorizer: true}
+}
 
-// declsWithoutAuthorizer compiles a messageExpression. The apiserver
-// deliberately does not declare `authorizer` there -- a message is rendered
-// after the decision is made, so it may not ask new authorization questions,
-// and naming it is a compilation error rather than a runtime one.
-var declsWithoutAuthorizer = celplugin.OptionalVariableDeclarations{HasAuthorizer: false}
+// declsForMessage compiles a messageExpression. The apiserver deliberately does
+// not declare `authorizer` there -- a message is rendered after the decision is
+// made, so it may not ask new authorization questions, and naming it is a
+// compilation error rather than a runtime one.
+func declsForMessage(hasParams bool) celplugin.OptionalVariableDeclarations {
+	return celplugin.OptionalVariableDeclarations{HasParams: hasParams, HasAuthorizer: false}
+}
 
 // evalActivation mirrors apiserver's own (unexported) evaluationActivation. The
 // playground has to build its own because it evaluates each expression itself
@@ -202,18 +210,18 @@ type policyCompiler struct {
 
 // newPolicyCompiler compiles spec.variables in order -- order matters, a
 // variable may reference the ones declared before it.
-func newPolicyCompiler(variables []CelVariableInfo) (*policyCompiler, error) {
+func newPolicyCompiler(celInfo *CelInformation) (*policyCompiler, error) {
 	compiler, err := celplugin.NewCompositedCompiler(baseEnvSet())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL compiler: %w", err)
 	}
 	p := &policyCompiler{
 		compiler:          compiler,
-		compiledVariables: make(map[string]celplugin.CompilationResult, len(variables)),
+		compiledVariables: make(map[string]celplugin.CompilationResult, len(celInfo.variables)),
 	}
-	for _, variable := range variables {
+	for _, variable := range celInfo.variables {
 		accessor := &variableExpression{name: variable.name, expression: variable.expression}
-		p.compiledVariables[variable.name] = compiler.CompileAndStoreVariable(accessor, declsWithAuthorizer, environment.StoredExpressions)
+		p.compiledVariables[variable.name] = compiler.CompileAndStoreVariable(accessor, declsFor(celInfo.hasParams), environment.StoredExpressions)
 		p.variableNames = append(p.variableNames, variable.name)
 	}
 	return p, nil
