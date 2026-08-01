@@ -679,3 +679,31 @@ spec:
 		}
 	}
 }
+
+// An object with no apiVersion or kind cannot be mutated: the merge needs a
+// type to look up and the patchers need a group-version to stamp on the patch.
+// A cluster never sees such an object -- it would not have decoded -- so this
+// is the playground telling the user to finish the tab, not a cluster
+// behaviour being reproduced.
+func TestMutationNeedsTheObjectsGroupVersionKind(t *testing.T) {
+	for _, object := range []string{
+		"metadata:\n  name: nginx\n",
+		"kind: Deployment\nmetadata:\n  name: nginx\n",
+	} {
+		out, err := k8s.EvalMutatingAdmissionPolicy(
+			readMapFile(t, "applyconfig label policy.yaml"), nil, []byte(object), nil, nil, nil)
+		if err != nil {
+			t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+		}
+		response := k8s.EvalResponse{}
+		if err := json.Unmarshal([]byte(out), &response); err != nil {
+			t.Fatalf("json.Unmarshal() error: %v", err)
+		}
+		if len(response.Mutations) != 1 || !response.Mutations[0].IsError {
+			t.Fatalf("an object without a kind was mutated: %s", out)
+		}
+		if !strings.Contains(*response.Mutations[0].Error, "apiVersion and kind") {
+			t.Errorf("error = %q, want it to name what is missing", *response.Mutations[0].Error)
+		}
+	}
+}
