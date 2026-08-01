@@ -356,3 +356,72 @@ spec:
 		t.Errorf("a mutation ran behind a matchCondition that cannot compile")
 	}
 }
+
+// A field the schema does not declare is refused by a cluster before any policy
+// runs. The playground has no such gate, so it says so -- and then must not
+// blame the mutations for the field: reading the patched object back through
+// the schema would fail for every one of them, on a fault that was in the input.
+func TestMutationBlamesTheObjectForItsOwnUndeclaredFields(t *testing.T) {
+	response := evalMutation(t, "jsonpatch label policy.yaml", "undeclared field object.yaml", "", "")
+
+	if len(response.Warnings) != 1 {
+		t.Fatalf("got %d warnings, want one about the object: %q", len(response.Warnings), response.Warnings)
+	}
+	if !strings.Contains(response.Warnings[0], "does not fit the Deployment schema") ||
+		!strings.Contains(response.Warnings[0], "replicaz") {
+		t.Errorf("warning = %q, want it to name the field the schema does not declare", response.Warnings[0])
+	}
+	if len(response.Mutations) != 1 {
+		t.Fatalf("got %d mutations, want 1", len(response.Mutations))
+	}
+	if response.Mutations[0].IsError {
+		t.Errorf("the mutation was blamed for a field the object already carried: %s", *response.Mutations[0].Error)
+	}
+	if response.FinalObject == "" {
+		t.Errorf("nothing was applied, so the object-level warning cost the user the result as well")
+	}
+}
+
+// Each mutation sees a fresh `variables` map, so the panel reports what that
+// mutation read and nothing else. Sharing one map between them would report a
+// variable against a mutation that never dereferenced it.
+func TestMutationVariablesAreScopedToTheMutationThatReadThem(t *testing.T) {
+	policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: one-variable-each
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  variables:
+  - name: first
+    expression: "'one'"
+  - name: second
+    expression: "'two'"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{metadata: Object.metadata{labels: {"a": variables.first}}}
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{metadata: Object.metadata{labels: {"b": variables.second}}}
+`
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "object.yaml"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	var names []string
+	for _, variable := range response.MutationVariables {
+		names = append(names, variable.Name)
+	}
+	want := []string{"mutations[0].first", "mutations[1].second"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("variables reported as %v, want %v", names, want)
+	}
+}

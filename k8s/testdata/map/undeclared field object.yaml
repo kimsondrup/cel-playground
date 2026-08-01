@@ -1,0 +1,25 @@
+# spec.replicaz is not a field of a Deployment. A cluster refuses the object
+# outright, before any policy runs; here the mutation still runs, so the
+# playground has to say who is to blame -- and must not blame the mutation for
+# a field it inherited.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: default
+  labels:
+    app: nginx
+spec:
+  replicas: 1
+  replicaz: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27
