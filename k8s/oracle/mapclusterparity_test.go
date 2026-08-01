@@ -137,6 +137,21 @@ func TestMAPPlaygroundMatchesCluster(t *testing.T) {
 					t.Errorf("%s: %v\n  cluster:    %s\n  playground: %s", path, err, pretty(want), pretty(got))
 				}
 			}
+
+			// The paths above are the ones the *cluster* changed, so a field the
+			// playground invented anywhere else would go unseen. Holding the
+			// whole object to the cluster's closes that: everything the
+			// playground says has to be something the cluster says too, and only
+			// the defaults the playground does not apply may be missing.
+			clusterWhole := mutated.DeepCopy().Object
+			for _, object := range []map[string]any{playground, clusterWhole} {
+				if metadata, ok := object["metadata"].(map[string]any); ok {
+					delete(metadata, "name")
+				}
+			}
+			if err := containedIn(playground, clusterWhole); err != nil {
+				t.Errorf("the playground's object is not contained in the cluster's: %v", err)
+			}
 		})
 	}
 }

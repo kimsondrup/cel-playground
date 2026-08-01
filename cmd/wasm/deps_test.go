@@ -16,6 +16,7 @@ package main_test
 
 import (
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -31,17 +32,27 @@ import (
 var forbidden = []struct {
 	prefix string
 	why    string
+	// except names packages under prefix that are wanted anyway. The mutating
+	// plugin is the case: its patch subpackage is what applies a mutation, and
+	// the package above it is what must not come with it.
+	except []string
 }{
-	{"k8s.io/client-go/kubernetes", "the typed clientset registers every built-in API group's scheme; it was measured at +2.99 MB gzip"},
-	{"k8s.io/client-go/informers", "informers pull the clientset in behind them"},
-	{"k8s.io/client-go/dynamic", "nothing in a browser talks to an apiserver"},
-	{"k8s.io/client-go/discovery", "nothing in a browser talks to an apiserver"},
-	{"google.golang.org/grpc", "egress selector and konnectivity; there is no network here"},
-	{"go.opentelemetry.io/otel/exporters", "tracing exporters ship nowhere from a browser"},
-	{"k8s.io/apiserver/pkg/admission/plugin/policy/validating", "+6 MB gzip; the oracle imports it, the binary must not"},
-	{"k8s.io/apiserver/pkg/admission/plugin/policy/matching", "its kubernetes.Interface parameter re-registers the client-go scheme"},
-	{"k8s.io/apiserver/pkg/storage", "there is nothing to store"},
-	{"sigs.k8s.io/controller-runtime", "test-only; it belongs to the oracle module"},
+	{"k8s.io/client-go/kubernetes", "the typed clientset registers every built-in API group's scheme; it was measured at +2.99 MB gzip", nil},
+	{"k8s.io/client-go/informers", "informers pull the clientset in behind them", nil},
+	{"k8s.io/client-go/dynamic", "nothing in a browser talks to an apiserver", nil},
+	{"k8s.io/client-go/discovery", "nothing in a browser talks to an apiserver", nil},
+	{"google.golang.org/grpc", "egress selector and konnectivity; there is no network here", nil},
+	{"go.opentelemetry.io/otel/exporters", "tracing exporters ship nowhere from a browser", nil},
+	{"k8s.io/apiserver/pkg/admission/plugin/policy/validating", "+6 MB gzip; the oracle imports it, the binary must not", nil},
+	{
+		prefix: "k8s.io/apiserver/pkg/admission/plugin/policy/mutating",
+		why:    "+8.96 MB gzip: it reaches policy/validating, policy/generic and a fake clientset, so compilePolicy is reproduced from exported parts instead",
+		except: []string{"k8s.io/apiserver/pkg/admission/plugin/policy/mutating/patch"},
+	},
+	{"k8s.io/client-go/applyconfigurations", "+3.35 MB gzip; its generated merge schema is embedded as data instead, see k8s/typeconverter.go", nil},
+	{"k8s.io/apiserver/pkg/admission/plugin/policy/matching", "its kubernetes.Interface parameter re-registers the client-go scheme", nil},
+	{"k8s.io/apiserver/pkg/storage", "there is nothing to store", nil},
+	{"sigs.k8s.io/controller-runtime", "test-only; it belongs to the oracle module", nil},
 }
 
 func TestWasmLinksNothingExpensive(t *testing.T) {
@@ -58,9 +69,13 @@ func TestWasmLinksNothingExpensive(t *testing.T) {
 
 	for _, pkg := range packages {
 		for _, rule := range forbidden {
-			if pkg == rule.prefix || strings.HasPrefix(pkg, rule.prefix+"/") {
-				t.Errorf("the wasm binary links %s: %s", pkg, rule.why)
+			if pkg != rule.prefix && !strings.HasPrefix(pkg, rule.prefix+"/") {
+				continue
 			}
+			if slices.Contains(rule.except, pkg) {
+				continue
+			}
+			t.Errorf("the wasm binary links %s: %s", pkg, rule.why)
 		}
 	}
 	t.Logf("the wasm binary links %d packages", len(packages))

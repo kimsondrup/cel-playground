@@ -58,7 +58,7 @@ func TestMutationBoundsTheObjectItProduces(t *testing.T) {
 		// cluster would have carried in a request body.
 		name:   "an object grown past what a cluster would store is not applied",
 		policy: "copy grows the object policy.yaml",
-		want:   "past the 1048576 a cluster accepts in a request body",
+		want:   "past the 1048576 the playground will work with",
 	}, {
 		// Bounded by the patch library, armed from the apiserver's own
 		// JSONPatchMaxCopyBytes. Without the init() that arms it the default is
@@ -742,5 +742,146 @@ func TestMutationNeedsTheObjectsGroupVersionKind(t *testing.T) {
 		if !strings.Contains(message, "no decision") {
 			t.Errorf("decision = %q, want it to say there is no decision to report", message)
 		}
+	}
+}
+
+// A variable may be bound to the whole object, and every mutation gets its own
+// copy of every variable it reads. The per-object ceiling does not touch those,
+// so without a ceiling of their own the response grows with the length of the
+// policy: inflate a small object once, then read it back from a hundred
+// mutations, and a 16 KB policy answers with tens of megabytes for a few
+// thousand units of CEL cost.
+func TestMutationBoundsTheValuesItReports(t *testing.T) {
+	var copies []string
+	for i := range 9 {
+		copies = append(copies, fmt.Sprintf(`JSONPatch{op: "copy", from: "/spec", path: "/spec/x%d"}`, i))
+	}
+	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: echo-variables\nspec:\n  failurePolicy: Ignore\n  reinvocationPolicy: Never\n  variables:\n  - name: snap\n    expression: \"object\"\n  mutations:\n" +
+		"  - patchType: JSONPatch\n    jsonPatch:\n      expression: '[" + strings.Join(copies, ", ") + "]'\n"
+	const echoes = 60
+	for i := range echoes {
+		policy += fmt.Sprintf("  - patchType: JSONPatch\n    jsonPatch:\n      expression: '[JSONPatch{op: \"add\", path: \"/metadata/annotations\", value: {}}, JSONPatch{op: \"add\", path: \"/metadata/annotations/e%d\", value: string(size(variables.snap))}]'\n", i)
+	}
+
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "bomb object.yaml"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.MutationVariables) != echoes {
+		t.Fatalf("got %d variable rows, want one per echoing mutation (%d)", len(response.MutationVariables), echoes)
+	}
+	if len(out) > 3*1024*1024 {
+		t.Errorf("the response is %d bytes for a %d-byte policy", len(out), len(policy))
+	}
+	withheld := 0
+	for _, variable := range response.MutationVariables {
+		if value, ok := variable.Value.(string); ok && strings.HasPrefix(value, "(not shown") {
+			withheld++
+		}
+		if variable.Cost == nil {
+			t.Errorf("a withheld variable lost its cost as well as its value")
+		}
+	}
+	if withheld == 0 {
+		t.Fatalf("every variable value was reported, so nothing was bounded")
+	}
+	t.Logf("policy %d bytes, response %d bytes, %d of %d variable values withheld", len(policy), len(out), withheld, len(response.MutationVariables))
+}
+
+// A diff too large to send back is withheld, and the decision has to keep
+// telling the truth about whether the object changed: "left the object
+// unchanged" and "the diff is not shown" are different sentences and the panel
+// has only one place to say either.
+func TestMutationSaysTheObjectChangedEvenWhenTheDiffIsWithheld(t *testing.T) {
+	// A custom resource, so nothing reads it back against a schema, with a list
+	// long enough that rewriting every entry produces a diff past the ceiling.
+	var parts []string
+	for i := range 20000 {
+		parts = append(parts, fmt.Sprintf("  - name: part-%05d\n    size: %d\n", i, i))
+	}
+	object := "apiVersion: example.com/v1\nkind: Widget\nmetadata:\n  name: big\n  namespace: default\nspec:\n  parts:\n" + strings.Join(parts, "")
+	policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: rewrite-every-entry
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  mutations:
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: >
+        [JSONPatch{op: "replace", path: "/spec/parts", value: object.spec.parts.map(p, {"name": string(p.name) + "-renamed"})}]
+`
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, []byte(object), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if response.Mutations[0].IsError {
+		t.Fatalf("the mutation failed, so this case no longer produces a large diff: %s", *response.Mutations[0].Error)
+	}
+	if response.Diff != "" {
+		t.Fatalf("the diff was %d bytes and not withheld; this case no longer exercises the ceiling", len(response.Diff))
+	}
+	message, _ := response.Decision[0].Message.(string)
+	if strings.Contains(message, "unchanged") {
+		t.Errorf("decision = %q, and every entry in the list changed", message)
+	}
+	found := false
+	for _, warning := range response.Warnings {
+		if strings.Contains(warning, "no diff is shown") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the diff was withheld and nothing says so: %q", response.Warnings)
+	}
+}
+
+// A patched object the apiserver cannot decode comes back as a StatusError, and
+// the dispatcher returns those rather than collecting them -- so the mutations
+// after it never run, where an ordinary failure lets them.
+func TestAFatalMutationStopsTheOnesAfterIt(t *testing.T) {
+	policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: fatal-first
+spec:
+  failurePolicy: Ignore
+  reinvocationPolicy: Never
+  mutations:
+  - patchType: JSONPatch
+    jsonPatch:
+      expression: '[JSONPatch{op: "replace", path: "/spec/replicas", value: "10"}]'
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{metadata: Object.metadata{labels: {"second": "ran"}}}
+`
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "object.yaml"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.Mutations) != 1 {
+		t.Fatalf("got %d mutations, want only the one that aborted the dispatch", len(response.Mutations))
+	}
+	if response.FinalObject != "" {
+		t.Errorf("an object was reported after the dispatch aborted:\n%s", response.FinalObject)
+	}
+	message, _ := response.Decision[0].Message.(string)
+	if !strings.Contains(message, "whatever failurePolicy says") {
+		t.Errorf("decision = %q, want it to say failurePolicy does not excuse this", message)
 	}
 }

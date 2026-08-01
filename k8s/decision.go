@@ -114,18 +114,29 @@ func (s *evalSections) mutationDecision(celInfo *CelInformation) []*EvalResult {
 		return admissionResult(false, "no decision: the Object tab has to name an apiVersion and a kind before a mutation can run")
 	}
 
-	var failed, fatal []string
+	var failed, fatal, unanswerable []string
 	for i, mutation := range s.mutations {
 		if !mutation.IsError {
 			continue
 		}
-		failed = append(failed, fmt.Sprintf("mutations[%d]", i))
+		name := fmt.Sprintf("mutations[%d]", i)
+		if i < len(s.mutationUnanswerable) && s.mutationUnanswerable[i] {
+			unanswerable = append(unanswerable, name)
+			continue
+		}
+		failed = append(failed, name)
 		if i < len(s.mutationFatal) && s.mutationFatal[i] {
-			fatal = append(fatal, fmt.Sprintf("mutations[%d]", i))
+			fatal = append(fatal, name)
 		}
 	}
 
 	switch {
+	case len(unanswerable) > 0 && len(failed) == 0:
+		// The playground declined to answer, which is not a cluster refusing
+		// anything: quoting failurePolicy at the reader would assert an outcome
+		// nothing here established.
+		return result(false, fmt.Sprintf("no decision: %s is a question this playground cannot answer -- see the reason beside it",
+			strings.Join(unanswerable, ", ")))
 	case len(fatal) > 0:
 		// A patched object the apiserver cannot decode comes back from the
 		// patcher as a StatusError, and the dispatcher returns those instead of
@@ -145,7 +156,7 @@ func (s *evalSections) mutationDecision(celInfo *CelInformation) []*EvalResult {
 		// The dispatcher skips a patcher when there is no object to patch, and
 		// the request goes through untouched.
 		return result(true, "admitted: the request carries no object, so no mutation ran")
-	case s.diff == "":
+	case !s.objectChanged:
 		return result(true, "admitted: every mutation ran and left the object unchanged")
 	}
 	return result(true, "admitted: every mutation ran, and the object is mutated")

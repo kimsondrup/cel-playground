@@ -275,11 +275,11 @@ func TestAcceptedVersionsMatchTheAPI(t *testing.T) {
 	}
 }
 
-// The apiserver matches field names case-sensitively and refuses a document
-// carrying a field it does not know. Anything looser would evaluate a policy
-// here that a cluster will not store -- and a misspelled `matchConditions`
-// removes the gate rather than failing, so the mutations run unguarded with
-// nothing on screen to say why.
+// The apiserver matches field names case-sensitively, and kubectl asks it to
+// refuse a document carrying a field it does not know (fieldValidation=Strict).
+// Anything looser would evaluate a policy here that `kubectl apply` will not
+// accept -- and a misspelled `matchConditions` removes the gate rather than
+// failing, so the mutations run unguarded with nothing on screen to say why.
 func TestFieldNamesAreCaseSensitive(t *testing.T) {
 	policy := `
 apiVersion: admissionregistration.k8s.io/v1

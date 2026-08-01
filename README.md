@@ -206,7 +206,10 @@ with no opinion, exactly as it would on a cluster running RBAC alone.
 
 The tab is read strictly: an unknown field, a duplicate key, an unexpected kind
 or an apiVersion other than `rbac.authorization.k8s.io/v1` is reported rather
-than ignored.
+than ignored. The policy, Request and Namespace tabs are read the same way --
+which is what `kubectl` asks for, since it sends `fieldValidation=Strict`. A
+raw `POST` to the apiserver would instead store the document, warn, and drop
+the field it did not recognise.
 
 ## Development
 

@@ -15,6 +15,7 @@
 package k8s
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -318,6 +319,13 @@ type evalSections struct {
 	// mutationsUnevaluable records that the inputs, rather than the policy, are
 	// what stopped the mutations -- so there is no cluster decision to report.
 	mutationsUnevaluable bool
+	// mutationUnanswerable[i] marks a mutation the playground declined to
+	// answer, as opposed to one a cluster would have refused.
+	mutationUnanswerable []bool
+	// objectChanged is whether the mutations left a different object behind.
+	// The diff is not the test for that: a diff too large to send back is
+	// suppressed, and an unchanged object and a withheld diff are both empty.
+	objectChanged bool
 
 	diff         string
 	finalObject  string
@@ -423,7 +431,7 @@ func (s *evalSections) response() *EvalResponse {
 	matchConditions, validations, auditAnnotations := s.chainCosts()
 	cost := matchConditions + validations + auditAnnotations + s.mutationsCost()
 
-	return &EvalResponse{
+	response := &EvalResponse{
 		Decision:                   s.decision,
 		ExceededBudgets:            s.exceededBudgets(),
 		Warnings:                   s.warnings,
@@ -442,4 +450,79 @@ func (s *evalSections) response() *EvalResponse {
 		WebhookMatchConditions:     generateEvalArrayResults(s.webhookMatchConditions),
 		Cost:                       &cost,
 	}
+	boundReportedValues(response)
+	return response
 }
+
+// maxReportedValueBytes is how much of what the expressions evaluated *to* the
+// result carries, across every section of it.
+//
+// A variable may be bound to the whole object, and a policy may declare as many
+// mutations as it likes, each of which gets its own copy of every variable it
+// read. Without a ceiling the response grows with the length of the policy: a
+// 16 KB policy that inflates a 256-byte object and then reads it back from a
+// hundred mutations produced 34 MB, for 5,950 of a 10,000,000 cost budget. Cost
+// limits bound work, not output.
+const maxReportedValueBytes = 1024 * 1024
+
+// boundReportedValues withholds what the response cannot afford to carry, in
+// reading order, so that what survives is what the reader needs first: the
+// decision, then the expressions, then the variables behind them.
+func boundReportedValues(response *EvalResponse) {
+	remaining := maxReportedValueBytes
+	withheld := 0
+	// size is the length the value adds to the response, near enough: the
+	// marshaller runs over it once more later, and an estimate that is wrong by
+	// a constant factor still bounds the total.
+	size := func(value any) int {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return 0
+		}
+		return len(encoded)
+	}
+	afford := func(value any) bool {
+		if value == nil {
+			return true
+		}
+		cost := size(value)
+		if cost > remaining {
+			remaining, withheld = 0, withheld+1
+			return false
+		}
+		remaining -= cost
+		return true
+	}
+
+	for _, results := range append([][]*EvalResult{
+		response.Decision, response.ExceededBudgets, response.MatchConditions,
+		response.Validations, response.MessageExpressions, response.AuditAnnotations,
+	}, response.WebhookMatchConditions...) {
+		for _, result := range results {
+			if !afford(result.Result) {
+				result.Result = withheldValue
+			}
+			if !afford(result.Message) {
+				result.Message = withheldValue
+			}
+		}
+	}
+	for _, variables := range [][]*EvalVariable{
+		response.ValidationVariables, response.MessageExpressionVariables,
+		response.AuditAnnotationVariables, response.MutationVariables,
+	} {
+		for _, variable := range variables {
+			if !afford(variable.Value) {
+				variable.Value = withheldValue
+			}
+		}
+	}
+	if withheld > 0 {
+		response.Warnings = append(response.Warnings, fmt.Sprintf(
+			"%d of the values this run produced are not shown: together they come to more than the %d "+
+				"bytes the playground will send back. Their costs are still reported.", withheld, maxReportedValueBytes))
+	}
+}
+
+// withheldValue stands in for a value the response could not afford to carry.
+const withheldValue = "(not shown: the results of this run came to more than the playground will send back)"

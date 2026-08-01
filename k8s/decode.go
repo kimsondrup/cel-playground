@@ -32,11 +32,13 @@ import (
 // encoding/json, which matches struct fields case-insensitively, so a policy
 // that said `Validations:` would evaluate here and be ignored by a cluster.
 //
-// strict additionally rejects unknown fields and duplicate keys. Use it for
-// every closed Kubernetes type the playground reads -- the RBAC tab, the
-// request, the namespace -- because a field dropped there produces a wrong
-// answer with no other symptom. The object and oldObject tabs stay lenient:
-// they are arbitrary resources the playground has no schema for.
+// strict additionally rejects unknown fields and duplicate keys, which is what
+// kubectl asks for: it sends fieldValidation=Strict, so a misspelled field is
+// an error at apply time rather than a warning and a silent drop. Use it for
+// every closed Kubernetes type the playground reads -- the policy, the RBAC
+// tab, the request, the namespace -- because a field dropped there produces a
+// wrong answer with no other symptom. The object and oldObject tabs stay
+// lenient: they are arbitrary resources the playground has no schema for.
 func decodeTyped(input []byte, into any, strict bool) error {
 	if !strict {
 		jsonBytes, err := sigsyaml.YAMLToJSON(input)

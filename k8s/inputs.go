@@ -15,6 +15,7 @@
 package k8s
 
 import (
+	"cmp"
 	"fmt"
 	"reflect"
 	"strings"
@@ -58,18 +59,16 @@ type evalInputs struct {
 	// read it, where the validating validator passes it through
 	// CreateNamespaceObject first.
 	namespace *corev1.Namespace
-	// attributes is what the Request tab stands for, and admissionRequest is
-	// what the apiserver derives from it and binds as `request`.
+	// attributes is what the Request tab stands for.
 	//
 	// matchedKind and matchedResource are the group-version the policy was
 	// matched at, which is the request's own unless the tab distinguishes them.
 	// They are the two arguments CreateAdmissionRequest takes beside the
 	// attributes, and the patchers rebuild the request from the same three.
-	attributes       admission.Attributes
-	matchedKind      schema.GroupVersionKind
-	matchedResource  schema.GroupVersionResource
-	admissionRequest *admissionv1.AdmissionRequest
-	rbacAuthorizer   authorizer.Authorizer
+	attributes      admission.Attributes
+	matchedKind     schema.GroupVersionKind
+	matchedResource schema.GroupVersionResource
+	rbacAuthorizer  authorizer.Authorizer
 }
 
 // newEvalInputs decodes the playground's editor tabs.
@@ -126,15 +125,22 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 		requestResource = schema.GroupVersionResource(*request.RequestResource)
 	}
 
+	// A cluster derives request.subResource and request.requestSubResource from
+	// one value, so a tab that names only the second still means the first.
+	subResource := cmp.Or(request.SubResource, request.RequestSubResource)
+	options, err := operationOptions(operation, request.Options)
+	if err != nil {
+		return nil, fmt.Errorf("the Request tab's options are not an object: %w", err)
+	}
+
 	attributes := admission.NewAttributesRecord(
 		runtimeObject(objectValue), runtimeObject(oldObjectValue),
 		requestKind, request.Namespace, request.Name, requestResource,
-		request.SubResource, operation, operationOptions(operation, request.Options),
+		subResource, operation, options,
 		request.DryRun != nil && *request.DryRun, userInfo,
 	)
-	admissionRequest := celplugin.CreateAdmissionRequest(attributes,
-		metav1.GroupVersionResource(matchedResource), metav1.GroupVersionKind(matchedKind))
-	requestMap, err := objectToMap(admissionRequest)
+	requestMap, err := objectToMap(celplugin.CreateAdmissionRequest(attributes,
+		metav1.GroupVersionResource(matchedResource), metav1.GroupVersionKind(matchedKind)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert the request for evaluation: %w", err)
 	}
@@ -152,7 +158,6 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 		attributes:                attributes,
 		matchedKind:               matchedKind,
 		matchedResource:           matchedResource,
-		admissionRequest:          admissionRequest,
 		rbacAuthorizer:            rbacAuthorizer,
 	}, nil
 }
@@ -163,22 +168,23 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 // the empty options for the operation, which is what a client that sent none
 // produces. An operation the tab does not name gets nothing at all rather than
 // an invented CreateOptions.
-func operationOptions(operation admission.Operation, declared runtime.RawExtension) runtime.Object {
+func operationOptions(operation admission.Operation, declared runtime.RawExtension) (runtime.Object, error) {
 	if len(declared.Raw) > 0 {
 		content := map[string]any{}
-		if err := apimachineryjson.Unmarshal(declared.Raw, &content); err == nil {
-			return &unstructured.Unstructured{Object: content}
+		if err := apimachineryjson.Unmarshal(declared.Raw, &content); err != nil {
+			return nil, err
 		}
+		return &unstructured.Unstructured{Object: content}, nil
 	}
 	switch operation {
 	case admission.Create:
-		return &metav1.CreateOptions{}
+		return &metav1.CreateOptions{}, nil
 	case admission.Update:
-		return &metav1.UpdateOptions{}
+		return &metav1.UpdateOptions{}, nil
 	case admission.Delete:
-		return &metav1.DeleteOptions{}
+		return &metav1.DeleteOptions{}, nil
 	default:
-		return nil
+		return nil, nil
 	}
 }
 

@@ -209,6 +209,7 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		s.mutations = append(s.mutations, result)
 		s.mutationScopes = append(s.mutationScopes, nil)
 		s.mutationFatal = append(s.mutationFatal, false)
+		s.mutationUnanswerable = append(s.mutationUnanswerable, false)
 
 		accessor, newPatcher, err := mutationPatcher(mutation)
 		if err != nil {
@@ -227,6 +228,7 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		// validatePatch refuses outright. Guessing either way would report a
 		// result a cluster contradicts.
 		if !schemaBacked && mutation.patchType == admissionregistrationv1.PatchTypeApplyConfiguration {
+			s.mutationUnanswerable[len(s.mutationUnanswerable)-1] = true
 			setMutationError(result, fmt.Errorf(
 				"there is no merge schema for %s here, so what an ApplyConfiguration does to it cannot be "+
 					"answered: a cluster reads the schema from the CustomResourceDefinition, and merges by "+
@@ -290,7 +292,9 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 				s.mutationFatal[len(s.mutationFatal)-1] = true
 				setMutationError(result, fmt.Errorf(
 					"a cluster reads the patched object back against the %s schema and would refuse it: %w", gvk.Kind, err))
-				continue
+				// A StatusError aborts the dispatch where an ordinary error is
+				// collected, so the mutations after this one never run.
+				break
 			}
 		}
 
@@ -301,18 +305,20 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		}
 		if len(mutatedYAML) > maxMutatedObjectBytes {
 			// The copy limit armed above bounds a single patch; nothing bounds
-			// what a policy accumulates over several. An object this size is
-			// past what a cluster would carry in a request body, so it is
-			// reported as this mutation failing and is not threaded into the
-			// next one.
+			// what a policy accumulates over several. This is the playground's
+			// own ceiling, not a cluster's -- an apiserver takes a 3 MB request
+			// body and etcd holds 1.5 MiB -- so the mutations after this one are
+			// not run against an object nobody can see.
+			s.mutationUnanswerable[len(s.mutationUnanswerable)-1] = true
 			setMutationError(result, fmt.Errorf(
-				"the mutated object is %d bytes, past the %d a cluster accepts in a request body, "+
-					"so it was not applied or passed to the mutations after it",
+				"the mutated object is %d bytes, past the %d the playground will work with, so it was "+
+					"not applied or passed to the mutations after it",
 				len(mutatedYAML), maxMutatedObjectBytes))
 			continue
 		}
 
 		current, mutated = mutatedYAML, true
+		s.objectChanged = s.objectChanged || mutatedYAML != original
 		versionedAttributes.VersionedObject = patched
 		// The object is applied whatever happens; what is bounded is how much of
 		// it travels back. Past the ceiling the trace is dropped and the final
@@ -422,15 +428,6 @@ func mutationPatcher(mutation CelMutationInfo) (celplugin.ExpressionAccessor, fu
 	default:
 		return nil, nil, fmt.Errorf("unsupported patchType %q; expected ApplyConfiguration or JSONPatch", mutation.patchType)
 	}
-}
-
-func hasApplyConfiguration(celInfo *CelInformation) bool {
-	for _, mutation := range celInfo.mutations {
-		if mutation.patchType == admissionregistrationv1.PatchTypeApplyConfiguration {
-			return true
-		}
-	}
-	return false
 }
 
 // marshalObjectYAML serializes an object for display. Everything reaching here

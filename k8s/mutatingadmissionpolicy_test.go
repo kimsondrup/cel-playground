@@ -147,7 +147,7 @@ func TestMutationEval(t *testing.T) {
 			}},
 			Cost: uint64ptr(0),
 		},
-		decision: "rejected: mutations[0] failed and failurePolicy is Fail, so the request is denied and nothing is applied",
+		decision: "no decision: mutations[0] is a question this playground cannot answer -- see the reason beside it",
 	}, {
 		// A JSONPatch does not merge, so it needs no schema and is not warned
 		// about on a custom resource.
@@ -256,26 +256,26 @@ func TestMutationEval(t *testing.T) {
 		},
 		decision: "rejected: mutations[0] failed and failurePolicy is Fail, so the request is denied and nothing is applied",
 	}, {
-		// The dispatcher records a failed mutation and moves on to the next one,
-		// which runs against the object as the failure left it -- unmutated.
+		// An ordinary evaluation error is recorded and the dispatcher moves on
+		// to the next mutation, which runs against the object as the failure
+		// left it -- unmutated.
 		name:    "a failed mutation does not stop the ones after it",
 		policy:  "chained typo policy.yaml",
 		object:  "object.yaml",
 		mutated: "chained typo mutated.yaml",
 		expected: k8s.EvalResponse{
 			Mutations: []*k8s.EvalMutationResult{{
-				PatchType: "JSONPatch",
-				Cost:      uint64ptr(50),
+				PatchType: "ApplyConfiguration",
+				Cost:      uint64ptr(80),
 				IsError:   true,
-				Error:     strptr("a cluster reads the patched object back against the Deployment schema and would refuse it: .spec.replicaz: field not declared in schema"),
+				Error:     strptr("error applying patch: failed to convert patch object to typed object: .spec.replicaz: field not declared in schema"),
 			}, {
 				PatchType: "ApplyConfiguration",
 				Cost:      uint64ptr(80),
 			}},
-			Cost: uint64ptr(130),
+			Cost: uint64ptr(160),
 		},
-		decision: "rejected: mutations[0] produced an object the apiserver cannot decode, which fails the request whatever failurePolicy says",
-		warnings: []string{"A cluster would have applied none of this"},
+		decision: "admitted: mutations[0] failed but failurePolicy is Ignore, so those mutations are skipped and the rest still apply",
 	}, {
 		name:    "a v1alpha1 policy evaluates as its v1 self",
 		policy:  "v1alpha1 policy.yaml",

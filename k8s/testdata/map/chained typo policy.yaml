@@ -5,14 +5,20 @@ metadata:
 spec:
   failurePolicy: Ignore
   reinvocationPolicy: Never
+  matchConstraints:
+    resourceRules:
+    - apiGroups:   ["apps"]
+      apiVersions: ["v1"]
+      operations:  ["CREATE", "UPDATE"]
+      resources:   ["deployments"]
   mutations:
-  # Writes a field the Deployment schema does not declare. Only this mutation
-  # should be named in the warning.
-  - patchType: JSONPatch
-    jsonPatch:
+  # replicaz, not replicas. The merge refuses the patch, which is an ordinary
+  # error: the dispatcher records it and carries on to the next mutation.
+  - patchType: ApplyConfiguration
+    applyConfiguration:
       expression: >
-        [JSONPatch{op: "add", path: "/spec/replicaz", value: 3}]
-  # Touches only a label, and carries the misspelling above through untouched.
+        Object{spec: Object.spec{replicaz: 3}}
+  # Runs against the object as the failure left it -- unmutated -- and applies.
   - patchType: ApplyConfiguration
     applyConfiguration:
       expression: >
