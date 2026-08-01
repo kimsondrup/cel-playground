@@ -213,6 +213,11 @@ func runPlaygroundMutation(t *testing.T, tc mapParityCase) k8s.EvalResponse {
 	if err != nil {
 		t.Fatalf("the playground refused the fixture: %v", err)
 	}
+	return decodeEvalResponse(t, out)
+}
+
+func decodeEvalResponse(t *testing.T, out string) k8s.EvalResponse {
+	t.Helper()
 	response := k8s.EvalResponse{}
 	if err := json.Unmarshal([]byte(out), &response); err != nil {
 		t.Fatalf("decoding the playground's response: %v", err)
