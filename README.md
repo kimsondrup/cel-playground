@@ -124,6 +124,13 @@ refuses the patch outright, depending on whether the CRD declares
 `x-kubernetes-list-type`; with neither the schema nor the CRD in hand there is no
 answer worth giving. A `JSONPatch` needs no schema and works on any object.
 
+When a mutation does fail — a misspelled field, a quoted number, an expression
+that errors — the panel says which one and why, and the decision at the top says
+what a cluster would do about it. Under the default `failurePolicy: Fail` that is
+a denied request, and the object shown below is one no cluster reaches; a warning
+says so. The shipped examples all succeed, so the quickest way to see this is to
+break one: change `Object.metadata` to `Object.metadat` in the first example.
+
 What the mode parses and does not act on is repeated on screen in a
 **notSimulated** section, so a policy that would behave differently on a cluster
 never reports a confident result:
