@@ -163,6 +163,7 @@ spec:
 				t.Fatalf("extractCelInformation() error: %v", err)
 			}
 			want := &CelInformation{
+				failurePolicy:          admissionregistrationv1.Fail,
 				variables:              []CelVariableInfo{{name: "env", expression: "'prod'"}},
 				matchConditions:        []CelMatchConditionsInfo{{name: "not-kube-system", expression: "request.namespace != 'kube-system'"}},
 				validations:            []CelValidationInfo{{expression: "variables.env == 'prod'", message: "literal", messageExpression: "'computed'"}},

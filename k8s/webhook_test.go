@@ -180,6 +180,13 @@ func TestWebhookEval(t *testing.T) {
 				if err := json.Unmarshal([]byte(results), &evalResponse); err != nil {
 					t.Errorf("Eval() error = %v", err)
 				}
+				// The admission decision follows from the results below it and
+				// would be the same sentence in every row here. It has a table
+				// of its own, TestAdmissionDecision.
+				if len(evalResponse.Decision) == 0 {
+					t.Errorf("Eval() reported no decision")
+				}
+				evalResponse.Decision = nil
 				if !reflect.DeepEqual(tt.expected, evalResponse) {
 					expected, expErr := json.Marshal(tt.expected)
 					response, respErr := json.Marshal(evalResponse)

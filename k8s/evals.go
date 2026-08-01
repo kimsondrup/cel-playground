@@ -124,9 +124,12 @@ type EvalResult struct {
 // batches appears in two lists because a cluster evaluates, and charges for, it
 // twice.
 type EvalResponse struct {
+	// Decision is what a cluster would do with the request: whether the policy
+	// applies, and whether it admits. It comes first because it is the question
+	// everything else in the panel works towards.
+	Decision []*EvalResult `json:"decision,omitempty"`
 	// ExceededBudgets names the cost budgets this evaluation ran past, and is
-	// absent when it ran past none. It comes first because it is the one thing
-	// in the panel that says the request would have been rejected outright.
+	// absent when it ran past none.
 	ExceededBudgets            []*EvalResult   `json:"exceededBudgets,omitempty"`
 	MatchConditions            []*EvalResult   `json:"matchConditions,omitempty"`
 	ValidationVariables        []*EvalVariable `json:"validationVariables,omitempty"`
@@ -272,6 +275,9 @@ type evalSections struct {
 	auditAnnotations     evalResponses
 
 	webhookMatchConditions []evalResponses
+
+	// decision is the admission outcome the results add up to.
+	decision []*EvalResult
 }
 
 // chainCosts is what each of the apiserver's cost budgets is checked against.
@@ -329,6 +335,7 @@ func (s *evalSections) response() *EvalResponse {
 	cost := matchConditions + validations + auditAnnotations
 
 	return &EvalResponse{
+		Decision:                   s.decision,
 		ExceededBudgets:            s.exceededBudgets(),
 		MatchConditions:            generateEvalResults(s.matchConditions),
 		ValidationVariables:        generateEvalVariables(s.validationScope),

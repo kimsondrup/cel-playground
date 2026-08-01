@@ -183,8 +183,26 @@ func TestWebhookParityWithUpstream(t *testing.T) {
 			anyRejected := false
 			for w := range fixture.Webhooks {
 				hook := fixture.Webhooks[w]
-				want := predictWebhookCall(playground.WebhookMatchConditions[w], failurePolicyOf(hook))
+				// The playground states the outcome itself, so this compares
+				// its answer rather than a second implementation of the rule.
+				if w >= len(playground.Decision) {
+					t.Fatalf("the playground reported %d webhook decisions for %d webhooks", len(playground.Decision), len(fixture.Webhooks))
+				}
+				want := webhookPrediction{
+					called:   playground.Decision[w].Result == true,
+					rejected: playground.Decision[w].IsError,
+				}
+				if message, ok := playground.Decision[w].Message.(string); ok {
+					want.reason = message
+				}
 				anyRejected = anyRejected || want.rejected
+
+				// The rule it applies is small enough to state twice, and a
+				// second reading of matcher.Match is worth having.
+				if independent := predictWebhookCall(playground.WebhookMatchConditions[w], failurePolicyOf(hook)); independent.called != want.called || independent.rejected != want.rejected {
+					t.Errorf("webhook %q: the playground says called=%v rejected=%v (%s), reading matcher.Match here says called=%v rejected=%v (%s)",
+						hook.Name, want.called, want.rejected, want.reason, independent.called, independent.rejected, independent.reason)
+				}
 
 				rulesMatch := dialled(calls, prefix+controlPath(w), object.GetName())
 				got := dialled(calls, prefix+subjectPath(w), object.GetName())

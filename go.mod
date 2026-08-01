@@ -59,6 +59,11 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260128011058-8636f8732409 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	// apiextensions-apiserver and controller-manager are imported by nothing here.
+	// They pin two of k8s.io/kubernetes' staging requires, which upstream publishes
+	// as the non-existent v0.0.0; without a higher version to win MVS, `go mod tidy`
+	// fails while walking the test imports of plugin/pkg/auth/authorizer/rbac. Keep
+	// them at the same minor as the other k8s.io modules.
 	k8s.io/apiextensions-apiserver v0.36.2 // indirect
 	k8s.io/client-go v0.36.2 // indirect
 	k8s.io/component-base v0.36.2 // indirect

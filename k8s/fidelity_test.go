@@ -332,3 +332,130 @@ spec:
 		t.Errorf("auditAnnotations[0] = %v, want the evaluated string", got)
 	}
 }
+
+// The panel's first row answers the question a policy author actually has:
+// does this request get through? It follows the apiserver's rules, which
+// depend on failurePolicy and on whether an expression was false or broken.
+func TestAdmissionDecision(t *testing.T) {
+	tests := []struct {
+		name        string
+		spec        string
+		wantAdmit   bool
+		wantMessage string
+	}{{
+		name:        "every validation passes",
+		spec:        "  validations:\n    - expression: \"true\"",
+		wantAdmit:   true,
+		wantMessage: "admitted: every validation passed",
+	}, {
+		name:        "a validation is false",
+		spec:        "  validations:\n    - expression: \"true\"\n    - expression: \"false\"\n      message: nope",
+		wantAdmit:   false,
+		wantMessage: "denied by validations[1]: nope",
+	}, {
+		name:        "a validation cannot be evaluated and failurePolicy is Fail",
+		spec:        "  failurePolicy: Fail\n  validations:\n    - expression: \"object.spec.missing == 1\"",
+		wantAdmit:   false,
+		wantMessage: "rejected: validations[0] failed to evaluate and failurePolicy is Fail",
+	}, {
+		name:        "a validation cannot be evaluated and failurePolicy is Ignore",
+		spec:        "  failurePolicy: Ignore\n  validations:\n    - expression: \"object.spec.missing == 1\"",
+		wantAdmit:   true,
+		wantMessage: "admitted: validations[0] failed to evaluate but failurePolicy is Ignore",
+	}, {
+		name:        "a matchCondition is false, so the policy does not apply",
+		spec:        "  matchConditions:\n    - name: only-databases\n      expression: \"object.metadata.name == 'database'\"\n  validations:\n    - expression: \"false\"",
+		wantAdmit:   true,
+		wantMessage: `admitted: matchCondition "only-databases" is false, so the policy does not apply to this request`,
+	}, {
+		name:        "a matchCondition is broken and failurePolicy is Fail",
+		spec:        "  failurePolicy: Fail\n  matchConditions:\n    - name: broken\n      expression: \"object.spec.missing == 1\"\n  validations:\n    - expression: \"true\"",
+		wantAdmit:   false,
+		wantMessage: `rejected: matchCondition "broken" failed and failurePolicy is Fail`,
+	}, {
+		name:        "a matchCondition is broken and failurePolicy is Ignore",
+		spec:        "  failurePolicy: Ignore\n  matchConditions:\n    - name: broken\n      expression: \"object.spec.missing == 1\"\n  validations:\n    - expression: \"true\"",
+		wantAdmit:   true,
+		wantMessage: `admitted: matchCondition "broken" failed and failurePolicy is Ignore, so the policy is skipped`,
+	}, {
+		name:        "failurePolicy defaults to Fail",
+		spec:        "  validations:\n    - expression: \"object.spec.missing == 1\"",
+		wantAdmit:   false,
+		wantMessage: "rejected: validations[0] failed to evaluate and failurePolicy is Fail",
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := evalFidelityPolicy(t, "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: decision\nspec:\n"+tt.spec+"\n")
+			if len(response.Decision) != 1 {
+				t.Fatalf("got %d decisions, want 1", len(response.Decision))
+			}
+			decision := response.Decision[0]
+			if decision.Result != tt.wantAdmit {
+				t.Errorf("admitted = %v, want %v (%v)", decision.Result, tt.wantAdmit, decision.Message)
+			}
+			if got, _ := decision.Message.(string); got != tt.wantMessage {
+				t.Errorf("message = %q, want %q", got, tt.wantMessage)
+			}
+			if decision.IsError == tt.wantAdmit {
+				t.Errorf("isError = %v for an admitted=%v decision", decision.IsError, tt.wantAdmit)
+			}
+		})
+	}
+}
+
+// A webhook is skipped when a matchCondition is false and, when one is broken,
+// its own failurePolicy decides whether the request is rejected or the webhook
+// merely not called.
+func TestWebhookCallDecision(t *testing.T) {
+	tests := []struct {
+		name        string
+		webhook     string
+		wantCalled  bool
+		wantMessage string
+	}{{
+		name:        "every matchCondition is true",
+		webhook:     "    matchConditions:\n      - name: always\n        expression: \"true\"",
+		wantCalled:  true,
+		wantMessage: "called: every matchCondition is true",
+	}, {
+		name:        "a matchCondition is false",
+		webhook:     "    matchConditions:\n      - name: never\n        expression: \"false\"",
+		wantCalled:  false,
+		wantMessage: `not called: matchCondition "never" is false`,
+	}, {
+		name:        "a matchCondition is broken and failurePolicy is Fail",
+		webhook:     "    failurePolicy: Fail\n    matchConditions:\n      - name: broken\n        expression: \"object.spec.missing == 1\"",
+		wantCalled:  false,
+		wantMessage: `the request is rejected without calling the webhook: matchCondition "broken" failed and failurePolicy is Fail`,
+	}, {
+		name:        "a matchCondition is broken and failurePolicy is Ignore",
+		webhook:     "    failurePolicy: Ignore\n    matchConditions:\n      - name: broken\n        expression: \"object.spec.missing == 1\"",
+		wantCalled:  false,
+		wantMessage: `not called: matchCondition "broken" failed and failurePolicy is Ignore`,
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configuration := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingWebhookConfiguration\nwebhooks:\n  - name: hook.example.com\n    sideEffects: None\n    admissionReviewVersions: ['v1']\n" + tt.webhook + "\n"
+			out, err := EvalWebhook([]byte(configuration), nil, []byte(fidelityObject), nil, nil)
+			if err != nil {
+				t.Fatalf("EvalWebhook() error: %v", err)
+			}
+			response := EvalResponse{}
+			if err := json.Unmarshal([]byte(out), &response); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v", err)
+			}
+			if len(response.Decision) != 1 {
+				t.Fatalf("got %d decisions, want 1", len(response.Decision))
+			}
+			decision := response.Decision[0]
+			if decision.Result != tt.wantCalled {
+				t.Errorf("called = %v, want %v (%v)", decision.Result, tt.wantCalled, decision.Message)
+			}
+			if got, _ := decision.Message.(string); got != tt.wantMessage {
+				t.Errorf("message = %q, want %q", got, tt.wantMessage)
+			}
+		})
+	}
+}

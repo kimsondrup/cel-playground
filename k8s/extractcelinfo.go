@@ -48,7 +48,11 @@ type CelMatchConditionsInfo struct {
 type CelInformation struct {
 	// hasParams follows spec.paramKind, which is what decides whether `params`
 	// is declared for a policy's expressions.
-	hasParams              bool
+	hasParams bool
+	// failurePolicy decides what an expression that fails to evaluate does to
+	// the request. It defaults to Fail.
+	failurePolicy          admissionregistrationv1.FailurePolicyType
+	webhookFailurePolicies []admissionregistrationv1.FailurePolicyType
 	variables              []CelVariableInfo
 	validations            []CelValidationInfo
 	auditAnnotations       []CelAuditAnnotationsInfo
@@ -107,31 +111,42 @@ func extractCelInformation(input []byte, wanted ...string) (*CelInformation, err
 			return nil, fmt.Errorf("failed to decode input: %w", err)
 		}
 		matchConditions := make([][]admissionregistrationv1.MatchCondition, 0, len(configuration.Webhooks))
+		policies := make([]admissionregistrationv1.FailurePolicyType, 0, len(configuration.Webhooks))
 		for _, webhook := range configuration.Webhooks {
 			matchConditions = append(matchConditions, webhook.MatchConditions)
+			policies = append(policies, webhookFailurePolicy(webhook.FailurePolicy))
 		}
-		return webhookCelInformation(matchConditions), nil
+		return webhookCelInformation(matchConditions, policies), nil
 	case "MutatingWebhookConfiguration":
 		configuration := &admissionregistrationv1.MutatingWebhookConfiguration{}
 		if err := decodeTyped(input, configuration, false); err != nil {
 			return nil, fmt.Errorf("failed to decode input: %w", err)
 		}
 		matchConditions := make([][]admissionregistrationv1.MatchCondition, 0, len(configuration.Webhooks))
+		policies := make([]admissionregistrationv1.FailurePolicyType, 0, len(configuration.Webhooks))
 		for _, webhook := range configuration.Webhooks {
 			matchConditions = append(matchConditions, webhook.MatchConditions)
+			policies = append(policies, webhookFailurePolicy(webhook.FailurePolicy))
 		}
-		return webhookCelInformation(matchConditions), nil
+		return webhookCelInformation(matchConditions, policies), nil
 	default:
 		return nil, unknownKindError(typeMeta.Kind)
 	}
 }
 
-func webhookCelInformation(webhooks [][]admissionregistrationv1.MatchCondition) *CelInformation {
+func webhookCelInformation(webhooks [][]admissionregistrationv1.MatchCondition, policies []admissionregistrationv1.FailurePolicyType) *CelInformation {
 	extracted := make([][]CelMatchConditionsInfo, 0, len(webhooks))
 	for _, matchConditions := range webhooks {
 		extracted = append(extracted, extractMatchConditions(matchConditions))
 	}
-	return &CelInformation{webhookMatchConditions: extracted}
+	return &CelInformation{webhookMatchConditions: extracted, webhookFailurePolicies: policies}
+}
+
+func webhookFailurePolicy(policy *admissionregistrationv1.FailurePolicyType) admissionregistrationv1.FailurePolicyType {
+	if policy == nil {
+		return admissionregistrationv1.Fail
+	}
+	return *policy
 }
 
 // checkAccepted rejects anything the playground cannot evaluate, naming what it
@@ -212,8 +227,14 @@ func extractPolicyCelInformation(policy *admissionregistrationv1.ValidatingAdmis
 		})
 	}
 
+	failurePolicy := admissionregistrationv1.Fail
+	if policy.Spec.FailurePolicy != nil {
+		failurePolicy = *policy.Spec.FailurePolicy
+	}
+
 	return &CelInformation{
 		hasParams:        policy.Spec.ParamKind != nil,
+		failurePolicy:    failurePolicy,
 		variables:        variables,
 		validations:      validations,
 		auditAnnotations: auditAnnotations,
