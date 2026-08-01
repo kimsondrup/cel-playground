@@ -87,7 +87,11 @@ func decodeObjectInput(input []byte) (map[string]any, error) {
 	}
 	var decoded map[string]any
 	if err := apimachineryjson.Unmarshal(jsonBytes, &decoded); err != nil {
-		return nil, err
+		// The document parsed as YAML and is simply not a mapping -- a bare
+		// string, a list. encoding/json's "cannot unmarshal string into Go
+		// value of type map[string]interface {}" names neither YAML nor
+		// anything the reader typed.
+		return nil, fmt.Errorf("expected a YAML mapping with apiVersion and kind")
 	}
 	return decoded, nil
 }

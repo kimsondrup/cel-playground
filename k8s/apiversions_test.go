@@ -275,8 +275,11 @@ func TestAcceptedVersionsMatchTheAPI(t *testing.T) {
 	}
 }
 
-// The apiserver matches field names case-sensitively. Anything looser would
-// evaluate a policy here that a cluster reads as empty.
+// The apiserver matches field names case-sensitively and refuses a document
+// carrying a field it does not know. Anything looser would evaluate a policy
+// here that a cluster will not store -- and a misspelled `matchConditions`
+// removes the gate rather than failing, so the mutations run unguarded with
+// nothing on screen to say why.
 func TestFieldNamesAreCaseSensitive(t *testing.T) {
 	policy := `
 apiVersion: admissionregistration.k8s.io/v1
@@ -291,12 +294,40 @@ spec:
       Expression: "true"
 `
 	celInfo, err := extractCelInformation([]byte(policy), policyKind)
-	if err != nil {
-		t.Fatalf("extractCelInformation() error: %v", err)
-	}
-	if len(celInfo.validations) != 0 || len(celInfo.matchConditions) != 0 {
-		t.Errorf("extractCelInformation() read %d validations and %d matchConditions from capitalised field names; a cluster reads none",
+	if err == nil {
+		t.Fatalf("extractCelInformation() accepted capitalised field names and read %d validations and %d matchConditions; a cluster refuses the document",
 			len(celInfo.validations), len(celInfo.matchConditions))
+	}
+	for _, field := range []string{"spec.Validations", "spec.MatchConditions"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("the error does not name %s: %v", field, err)
+		}
+	}
+}
+
+// The same, for a MutatingAdmissionPolicy, where a dropped field changes the
+// object the panel shows rather than a boolean.
+func TestMutatingPolicyFieldsAreReadStrictly(t *testing.T) {
+	policy := `
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: typo
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchCondtions:
+    - name: never
+      expression: "false"
+  mutations:
+    - patchType: ApplyConfiguration
+      applyConfiguration:
+        expression: 'Object{}'
+`
+	if _, err := extractCelInformation([]byte(policy), mutatingPolicyKind); err == nil {
+		t.Fatal("extractCelInformation() accepted a misspelled matchConditions, which silently removes the gate")
+	} else if !strings.Contains(err.Error(), "matchCondtions") {
+		t.Errorf("the error does not name the misspelled field: %v", err)
 	}
 }
 
@@ -545,15 +576,31 @@ func TestEachModeRejectsTheOtherModesKind(t *testing.T) {
 	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: p\nspec:\n  validations:\n    - expression: \"true\"\n"
 	configuration := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingWebhookConfiguration\nwebhooks: []\n"
 
+	mutating := "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: m\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  mutations:\n    - patchType: ApplyConfiguration\n      applyConfiguration:\n        expression: 'Object{}'\n"
+
+	// Each error names the mode that does take the kind, because with four
+	// modes "the other one" is a guess.
 	if _, err := EvalWebhook([]byte(policy), nil, nil, nil, nil); err == nil {
 		t.Errorf("EvalWebhook() accepted a ValidatingAdmissionPolicy")
-	} else if !strings.Contains(err.Error(), "belongs in the other one") {
+	} else if !strings.Contains(err.Error(), "belongs in the Validating Admission Policy mode") {
 		t.Errorf("EvalWebhook() error = %q", err)
 	}
 
 	if _, err := EvalValidatingAdmissionPolicy([]byte(configuration), nil, nil, nil, nil, nil); err == nil {
 		t.Errorf("EvalValidatingAdmissionPolicy() accepted a ValidatingWebhookConfiguration")
-	} else if !strings.Contains(err.Error(), "belongs in the other one") {
+	} else if !strings.Contains(err.Error(), "belongs in the Web Hooks mode") {
 		t.Errorf("EvalValidatingAdmissionPolicy() error = %q", err)
+	}
+
+	if _, err := EvalValidatingAdmissionPolicy([]byte(mutating), nil, nil, nil, nil, nil); err == nil {
+		t.Errorf("EvalValidatingAdmissionPolicy() accepted a MutatingAdmissionPolicy")
+	} else if !strings.Contains(err.Error(), "belongs in the Mutating Admission Policy mode") {
+		t.Errorf("EvalValidatingAdmissionPolicy() error = %q", err)
+	}
+
+	if _, err := EvalMutatingAdmissionPolicy([]byte(policy), nil, nil, nil, nil, nil); err == nil {
+		t.Errorf("EvalMutatingAdmissionPolicy() accepted a ValidatingAdmissionPolicy")
+	} else if !strings.Contains(err.Error(), "belongs in the Validating Admission Policy mode") {
+		t.Errorf("EvalMutatingAdmissionPolicy() error = %q", err)
 	}
 }

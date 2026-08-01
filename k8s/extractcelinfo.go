@@ -112,25 +112,26 @@ func extractCelInformation(input []byte, wanted ...string) (*CelInformation, err
 		return nil, err
 	}
 	if !slices.Contains(wanted, typeMeta.Kind) {
-		return nil, fmt.Errorf("this mode evaluates %s; %q belongs in the other one", strings.Join(prefixedKinds(wanted), " and "), typeMeta.Kind)
+		return nil, fmt.Errorf("this mode evaluates %s; %q belongs in the %s mode",
+			strings.Join(prefixedKinds(wanted), " and "), typeMeta.Kind, modeForKind(typeMeta.Kind))
 	}
 
 	switch typeMeta.Kind {
 	case "ValidatingAdmissionPolicy":
 		policy := &admissionregistrationv1.ValidatingAdmissionPolicy{}
-		if err := decodeTyped(input, policy, false); err != nil {
+		if err := decodeTyped(input, policy, true); err != nil {
 			return nil, fmt.Errorf("failed to decode input: %w", err)
 		}
 		return extractPolicyCelInformation(policy), nil
 	case "MutatingAdmissionPolicy":
 		policy := &admissionregistrationv1.MutatingAdmissionPolicy{}
-		if err := decodeTyped(input, policy, false); err != nil {
+		if err := decodeTyped(input, policy, true); err != nil {
 			return nil, fmt.Errorf("failed to decode input: %w", err)
 		}
 		return extractMutatingPolicyCelInformation(policy), nil
 	case "ValidatingWebhookConfiguration":
 		configuration := &admissionregistrationv1.ValidatingWebhookConfiguration{}
-		if err := decodeTyped(input, configuration, false); err != nil {
+		if err := decodeTyped(input, configuration, true); err != nil {
 			return nil, fmt.Errorf("failed to decode input: %w", err)
 		}
 		matchConditions := make([][]admissionregistrationv1.MatchCondition, 0, len(configuration.Webhooks))
@@ -142,7 +143,7 @@ func extractCelInformation(input []byte, wanted ...string) (*CelInformation, err
 		return webhookCelInformation(matchConditions, policies), nil
 	case "MutatingWebhookConfiguration":
 		configuration := &admissionregistrationv1.MutatingWebhookConfiguration{}
-		if err := decodeTyped(input, configuration, false); err != nil {
+		if err := decodeTyped(input, configuration, true); err != nil {
 			return nil, fmt.Errorf("failed to decode input: %w", err)
 		}
 		matchConditions := make([][]admissionregistrationv1.MatchCondition, 0, len(configuration.Webhooks))
@@ -193,6 +194,19 @@ func checkAccepted(typeMeta metav1.TypeMeta) error {
 		}
 	}
 	return fmt.Errorf("cannot evaluate apiVersion %q for kind %q; expected one of %s", typeMeta.APIVersion, typeMeta.Kind, strings.Join(prefixed(admissionregistrationGroup+"/", versions), ", "))
+}
+
+// modeForKind names the mode that does evaluate a kind, which is more use than
+// the list of kinds this one takes.
+func modeForKind(kind string) string {
+	switch kind {
+	case policyKind:
+		return "Validating Admission Policy"
+	case mutatingPolicyKind:
+		return "Mutating Admission Policy"
+	default:
+		return "Web Hooks"
+	}
 }
 
 func prefixedKinds(kinds []string) []string {
@@ -256,12 +270,13 @@ func extractPolicyCelInformation(policy *admissionregistrationv1.ValidatingAdmis
 	}
 
 	return &CelInformation{
-		hasParams:        policy.Spec.ParamKind != nil,
-		failurePolicy:    failurePolicy,
-		variables:        variables,
-		validations:      validations,
-		auditAnnotations: auditAnnotations,
-		matchConditions:  extractMatchConditions(policy.Spec.MatchConditions),
+		hasParams:           policy.Spec.ParamKind != nil,
+		hasMatchConstraints: policy.Spec.MatchConstraints != nil,
+		failurePolicy:       failurePolicy,
+		variables:           variables,
+		validations:         validations,
+		auditAnnotations:    auditAnnotations,
+		matchConditions:     extractMatchConditions(policy.Spec.MatchConditions),
 	}
 }
 
