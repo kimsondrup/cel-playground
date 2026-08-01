@@ -59,6 +59,16 @@
       "dataRequest": "# The RBAC tab answers questions about this user.\nuserInfo:\n  username: alice\n  groups:\n    - system:authenticated\n    - platform-team\n",
       "dataAuthorizer": "# Real RBAC objects, resolved by Kubernetes' own RBAC authorizer. Change\n# the binding's subject to someone other than alice, or delete it, and the\n# validation fails.\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: deployment-escalator\n  namespace: default\nrules:\n  - apiGroups: [\"apps\"]\n    resources: [\"deployments\"]\n    verbs: [\"escalate\"]\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: alice-deployment-escalator\n  namespace: default\nsubjects:\n  - kind: User\n    apiGroup: rbac.authorization.k8s.io\n    name: alice\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: deployment-escalator\n",
       "category": "RBAC"
+    },
+    {
+      "name": "Custom Resource",
+      "vap": "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: \"bound-cache-replicas\"\nspec:\n  failurePolicy: Fail\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"example.com\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"caches\"]\n  validations:\n  # Validation only reads, so a custom resource needs no schema here and\n  # no CustomResourceDefinition: the object arrives as plain data and CEL\n  # walks it. The cost of that is that nothing checks your field names --\n  # a typo in a path below is an evaluation error at request time, not a\n  # rejected policy.\n  - expression: \"object.spec.replicas <= 5\"\n    message: \"a Cache may not ask for more than 5 replicas\"\n  # A field the CustomResourceDefinition does not declare would be pruned\n  # by the apiserver before this policy ever ran, so test that what you\n  # need is present rather than assuming it survived.\n  - expression: \"has(object.spec.eviction) && object.spec.eviction in ['lru', 'lfu']\"\n    message: \"spec.eviction must be lru or lfu\"\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: example.com/v1\nkind: Cache\nmetadata:\n  name: sessions\n  namespace: default\nspec:\n  eviction: \"lru\"\n  replicas: 3\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": "",
+      "category": "Custom Resources"
     }
   ],
   "versions": {

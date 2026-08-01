@@ -532,3 +532,79 @@ examples:
 
     category: "RBAC"
 
+
+  - name: "Custom Resource"
+    webhooks: |
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingWebhookConfiguration
+      webhooks:
+        - name: cache-webhook.example.com
+          matchPolicy: Equivalent
+          rules:
+            - operations: ['CREATE','UPDATE']
+              apiGroups: ['example.com']
+              apiVersions: ['v1']
+              resources: ['caches']
+          failurePolicy: 'Ignore'
+          sideEffects: None
+          clientConfig:
+            service:
+              namespace: my-namespace
+              name: cache-webhook
+            caBundle: 'PGNhYnVuZGxlPgo='
+          matchConditions:
+            # A matchCondition decides whether the webhook is called at all, and
+            # it sees the request and the object as data -- so a custom resource
+            # needs no schema and no CustomResourceDefinition to match on.
+            - name: 'only-multi-replica-caches'
+              expression: 'object.spec.replicas > 1'
+            # request.resource is the group/version/resource the apiserver
+            # actually routed, which is how you narrow to one custom type when
+            # the rules above are broader.
+            - name: 'only-caches'
+              expression: 'request.resource.group == "example.com" && request.resource.resource == "caches"'
+            - name: 'skip-controllers'
+              expression: '!request.userInfo.username.startsWith("system:")'
+
+    dataOldObject: |
+
+    dataObject: |
+      apiVersion: example.com/v1
+      kind: Cache
+      metadata:
+        name: sessions
+        namespace: default
+      spec:
+        eviction: "lru"
+        replicas: 3
+
+    dataRequest: |
+      uid: 705ab4f5-6393-11e8-b7cc-42010a800002
+      kind:
+        group: example.com
+        version: v1
+        kind: Cache
+      resource:
+        group: example.com
+        version: v1
+        resource: caches
+      requestKind:
+        group: example.com
+        version: v1
+        kind: Cache
+      requestResource:
+        group: example.com
+        version: v1
+        resource: caches
+      name: sessions
+      namespace: default
+      operation: CREATE
+      userInfo:
+        username: alice
+        uid: 014fbff9a07c
+        groups:
+          - system:authenticated
+
+    dataAuthorizer: |
+
+    category: "Custom Resources"

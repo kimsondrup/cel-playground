@@ -494,3 +494,51 @@ examples:
         name: deployment-escalator
 
     category: "RBAC"
+
+  - name: "Custom Resource"
+    vap: |
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingAdmissionPolicy
+      metadata:
+        name: "bound-cache-replicas"
+      spec:
+        failurePolicy: Fail
+        matchConstraints:
+          resourceRules:
+          - apiGroups:   ["example.com"]
+            apiVersions: ["v1"]
+            operations:  ["CREATE", "UPDATE"]
+            resources:   ["caches"]
+        validations:
+        # Validation only reads, so a custom resource needs no schema here and
+        # no CustomResourceDefinition: the object arrives as plain data and CEL
+        # walks it. The cost of that is that nothing checks your field names --
+        # a typo in a path below is an evaluation error at request time, not a
+        # rejected policy.
+        - expression: "object.spec.replicas <= 5"
+          message: "a Cache may not ask for more than 5 replicas"
+        # A field the CustomResourceDefinition does not declare would be pruned
+        # by the apiserver before this policy ever ran, so test that what you
+        # need is present rather than assuming it survived.
+        - expression: "has(object.spec.eviction) && object.spec.eviction in ['lru', 'lfu']"
+          message: "spec.eviction must be lru or lfu"
+
+    dataOldObject: |
+
+    dataObject: |
+      apiVersion: example.com/v1
+      kind: Cache
+      metadata:
+        name: sessions
+        namespace: default
+      spec:
+        eviction: "lru"
+        replicas: 3
+
+    dataNamespace: |
+
+    dataRequest: |
+
+    dataAuthorizer: |
+
+    category: "Custom Resources"

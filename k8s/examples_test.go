@@ -17,6 +17,7 @@ package k8s_test
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/undistro/cel-playground/k8s"
@@ -107,15 +108,23 @@ func TestShippedExamplesEvaluate(t *testing.T) {
 				assertNoVariableErrors(t, "messageExpressionVariables", response.MessageExpressionVariables)
 				assertNoVariableErrors(t, "auditAnnotationVariables", response.AuditAnnotationVariables)
 				assertNoVariableErrors(t, "mutationVariables", response.MutationVariables)
-				for i, mutation := range response.Mutations {
-					if mutation.IsError {
-						t.Errorf("mutations[%d] failed: %s", i, *mutation.Error)
+				// A few examples exist to show a limit rather than a feature, and
+				// their mutation is meant to fail. They say so by naming the
+				// reason, which is asserted here: the example has to fail, and
+				// fail for the reason it advertises.
+				if want := example["expectMutationError"]; want != "" {
+					assertMutationRefused(t, response.Mutations, want)
+				} else {
+					for i, mutation := range response.Mutations {
+						if mutation.IsError {
+							t.Errorf("mutations[%d] failed: %s", i, *mutation.Error)
+						}
 					}
-				}
-				// An example that shows a mutation has to produce one; one that
-				// silently changed nothing teaches the wrong lesson.
-				if len(response.Mutations) > 0 && response.FinalObject == "" {
-					t.Errorf("the example's mutations left the object unchanged")
+					// An example that shows a mutation has to produce one; one
+					// that silently changed nothing teaches the wrong lesson.
+					if len(response.Mutations) > 0 && response.FinalObject == "" {
+						t.Errorf("the example's mutations left the object unchanged")
+					}
 				}
 				if len(response.Warnings) > 0 {
 					t.Errorf("the example raises a warning: %s", response.Warnings[0])
@@ -135,6 +144,26 @@ func assertNoErrors(t *testing.T, section string, results []*k8s.EvalResult) {
 			t.Errorf("%s[%d] failed: %s", section, i, *result.Error)
 		}
 	}
+}
+
+// assertMutationRefused holds an example that advertises a refusal to it: some
+// mutation has to fail, and its reason has to contain want. An example that
+// quietly started working again is as wrong as one that quietly broke, because
+// the text beside it still explains a refusal that no longer happens.
+func assertMutationRefused(t *testing.T, mutations []*k8s.EvalMutationResult, want string) {
+	t.Helper()
+	for _, mutation := range mutations {
+		if mutation.IsError && strings.Contains(*mutation.Error, want) {
+			return
+		}
+	}
+	for i, mutation := range mutations {
+		if mutation.IsError {
+			t.Errorf("mutations[%d] failed, but not with %q: %s", i, want, *mutation.Error)
+			return
+		}
+	}
+	t.Errorf("no mutation failed, but the example expects one to fail with %q", want)
 }
 
 func assertNoVariableErrors(t *testing.T, section string, variables []*k8s.EvalVariable) {

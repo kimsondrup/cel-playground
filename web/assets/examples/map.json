@@ -69,6 +69,27 @@
       "dataNamespace": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: default\n  labels:\n    kubernetes.io/metadata.name: default\n    environment: production\n",
       "dataRequest": "kind:\n  group: \"apps\"\n  version: \"v1\"\n  kind: \"Deployment\"\nresource:\n  group: \"apps\"\n  version: \"v1\"\n  resource: \"deployments\"\nname: \"nginx\"\nnamespace: \"default\"\noperation: \"UPDATE\"\nuserInfo:\n  username: \"alice\"\n  groups:\n  - \"system:authenticated\"\n",
       "dataAuthorizer": "# The RBAC tab holds real rbac.authorization.k8s.io/v1 objects, and\n# Kubernetes' own RBAC authorizer answers the check above from them, for\n# the user the Request tab names. Remove the binding and re-run: the\n# may-scale annotation flips to \"false\", because RBAC has no way to say\n# no -- only to stay silent.\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: deployment-scaler\nrules:\n  - apiGroups: [\"apps\"]\n    resources: [\"deployments\"]\n    verbs: [\"update\"]\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: alice-deployment-scaler\nsubjects:\n  - kind: User\n    apiGroup: rbac.authorization.k8s.io\n    name: alice\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: deployment-scaler\n"
+    },
+    {
+      "name": "Custom Resource (JSON Patch)",
+      "category": "Custom Resources",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"tag-widget-owner\"\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"example.com\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"widgets\"]\n  mutations:\n  # A JSONPatch addresses paths directly and never merges, so it needs no\n  # schema for the type it patches. That is why it works on a custom\n  # resource this playground has never seen: nothing here has to know\n  # what spec.parts means.\n  - patchType: JSONPatch\n    jsonPatch:\n      expression: >\n        [\n          JSONPatch{op: \"add\", path: \"/spec/owner\", value: \"platform\"}\n        ]\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: example.com/v1\nkind: Widget\nmetadata:\n  name: my-widget\n  namespace: default\nspec:\n  parts:\n  - name: existing\n    size: 3\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": ""
+    },
+    {
+      "name": "Custom Resource (Apply Configuration)",
+      "category": "Custom Resources",
+      "expectMutationError": "there is no merge schema for example.com/v1",
+      "map": "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: \"inject-a-widget-part\"\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  matchConstraints:\n    resourceRules:\n    - apiGroups:   [\"example.com\"]\n      apiVersions: [\"v1\"]\n      operations:  [\"CREATE\", \"UPDATE\"]\n      resources:   [\"widgets\"]\n  mutations:\n  # ApplyConfiguration merges, and a merge needs the target type's schema:\n  # whether spec.parts merges entry by entry or is replaced whole is\n  # written in the CustomResourceDefinition, and the two give opposite\n  # results -- one keeps the \"existing\" part, the other drops it. This\n  # playground carries the schemas of the built-in Kubernetes APIs only,\n  # so it answers with the reason rather than guessing. Change patchType\n  # to JSONPatch and the same policy runs.\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{\n          spec: Object.spec{\n            parts: [\n              Object.spec.parts{\n                name: \"injected\",\n                size: 1\n              }\n            ]\n          }\n        }\n",
+      "dataOldObject": "",
+      "dataObject": "apiVersion: example.com/v1\nkind: Widget\nmetadata:\n  name: my-widget\n  namespace: default\nspec:\n  parts:\n  - name: existing\n    size: 3\n",
+      "dataNamespace": "",
+      "dataRequest": "",
+      "dataAuthorizer": ""
     }
   ],
   "versions": {

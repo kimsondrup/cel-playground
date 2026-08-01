@@ -567,3 +567,111 @@ examples:
         apiGroup: rbac.authorization.k8s.io
         kind: ClusterRole
         name: deployment-scaler
+
+  - name: "Custom Resource (JSON Patch)"
+    category: "Custom Resources"
+    map: |
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: MutatingAdmissionPolicy
+      metadata:
+        name: "tag-widget-owner"
+      spec:
+        failurePolicy: Fail
+        reinvocationPolicy: Never
+        matchConstraints:
+          resourceRules:
+          - apiGroups:   ["example.com"]
+            apiVersions: ["v1"]
+            operations:  ["CREATE", "UPDATE"]
+            resources:   ["widgets"]
+        mutations:
+        # A JSONPatch addresses paths directly and never merges, so it needs no
+        # schema for the type it patches. That is why it works on a custom
+        # resource this playground has never seen: nothing here has to know
+        # what spec.parts means.
+        - patchType: JSONPatch
+          jsonPatch:
+            expression: >
+              [
+                JSONPatch{op: "add", path: "/spec/owner", value: "platform"}
+              ]
+
+    dataOldObject: |
+
+    dataObject: |
+      apiVersion: example.com/v1
+      kind: Widget
+      metadata:
+        name: my-widget
+        namespace: default
+      spec:
+        parts:
+        - name: existing
+          size: 3
+
+    dataNamespace: |
+
+    dataRequest: |
+
+    dataAuthorizer: |
+
+  - name: "Custom Resource (Apply Configuration)"
+    category: "Custom Resources"
+    # This example exists to show the refusal below, so the shipped-example test
+    # asserts that it still happens for this reason instead of asserting that
+    # nothing failed.
+    expectMutationError: "there is no merge schema for example.com/v1"
+    map: |
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: MutatingAdmissionPolicy
+      metadata:
+        name: "inject-a-widget-part"
+      spec:
+        failurePolicy: Fail
+        reinvocationPolicy: Never
+        matchConstraints:
+          resourceRules:
+          - apiGroups:   ["example.com"]
+            apiVersions: ["v1"]
+            operations:  ["CREATE", "UPDATE"]
+            resources:   ["widgets"]
+        mutations:
+        # ApplyConfiguration merges, and a merge needs the target type's schema:
+        # whether spec.parts merges entry by entry or is replaced whole is
+        # written in the CustomResourceDefinition, and the two give opposite
+        # results -- one keeps the "existing" part, the other drops it. This
+        # playground carries the schemas of the built-in Kubernetes APIs only,
+        # so it answers with the reason rather than guessing. Change patchType
+        # to JSONPatch and the same policy runs.
+        - patchType: ApplyConfiguration
+          applyConfiguration:
+            expression: >
+              Object{
+                spec: Object.spec{
+                  parts: [
+                    Object.spec.parts{
+                      name: "injected",
+                      size: 1
+                    }
+                  ]
+                }
+              }
+
+    dataOldObject: |
+
+    dataObject: |
+      apiVersion: example.com/v1
+      kind: Widget
+      metadata:
+        name: my-widget
+        namespace: default
+      spec:
+        parts:
+        - name: existing
+          size: 3
+
+    dataNamespace: |
+
+    dataRequest: |
+
+    dataAuthorizer: |
