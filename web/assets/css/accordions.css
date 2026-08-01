@@ -70,12 +70,40 @@
   transition: transform 300ms;
 }
 
-/* The caret, the status icons and the label text, left-aligned as one row. */
+/* The caret, the status icons and the label text, left-aligned as one row. It
+   is a <button>, so the browser's own chrome comes off and the row's font is
+   inherited rather than the form-control default. */
 .editor__output-result-accordion .result-accordion-label {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   position: relative;
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  /* The right-hand group does not shrink, so the label is what gives way when
+     the panel is narrow -- and it ellipsises rather than wrapping out of the
+     card, whose height is fixed while collapsed. */
+  min-width: 0;
+  overflow: hidden;
+}
+
+.editor__output-result-accordion .result-accordion-label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor__output-result-accordion .result-accordion-label:focus-visible {
+  outline: 2px solid #7aa2f7;
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .editor__output-result-accordion .result-accordion-error-icon {
@@ -96,26 +124,12 @@
   color: #e2b93d;
 }
 
-/* The label-sized use: the section's own colour on the collapsed card. */
-.editor__output-result-accordion .result-error {
-  color: #e01e5a;
-}
-
 /* An error body is bulk text -- a CEL compile error is four lines with a source
    excerpt and a caret -- and it is the most important thing on screen when it
-   appears. #e01e5a would be 2.6:1 on the expanded card's #33373d; this is
-   5.4:1. */
-.editor__output-result-accordion
-  .result-accordion-expansible-content
-  .result-error {
+   appears. The icon's #e01e5a would be 2.6:1 on the expanded card's #33373d;
+   this is 5.4:1. */
+.editor__output-result-accordion .result-error {
   color: #ff8ba0;
-}
-
-/* The header row is a control, so it shows focus. */
-.editor__output-result-accordion .result-accordion-content:focus-visible {
-  outline: 2px solid #7aa2f7;
-  outline-offset: 2px;
-  border-radius: 4px;
 }
 
 /* The cost and the copy button, right-aligned opposite the label. */
@@ -169,9 +183,10 @@
   color: #e01e5a;
 }
 
-/* Muted: this is the panel talking, not a value. */
+/* Muted, but still text to read: 4.8:1 on the expanded card. This is the panel
+   talking, not a value. */
 .editor__output-result-accordion .result-empty {
-  color: #7f8c98;
+  color: #9aa5b1;
   font-style: italic;
 }
 
@@ -261,8 +276,8 @@
   color: #4ec9b0;
 }
 
-/* Lighter than .result-error above, which is a short label rather than bulk
-   text: #e01e5a on the expanded card's #33373d is 2.6:1, where this is 5.4:1. */
+/* The same red as an error body, and for the same reason: bulk text on the
+   expanded card, 5.4:1. */
 .editor__output-result-accordion
   .result-accordion-expansible-content
   .diff-del {

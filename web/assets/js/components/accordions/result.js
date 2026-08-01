@@ -66,6 +66,7 @@ function renderDiff(diff) {
 // compilation, at evaluation, at patching or because there is nothing to
 // mutate, so the generic wording is the fallback rather than the rule.
 const errorTooltips = {
+  decision: "A cluster would not admit this request.",
   mutations: "This mutation was not applied.",
   mutationVariables: "This variable could not be evaluated.",
   matchConditions: "This match condition could not be evaluated.",
@@ -152,33 +153,33 @@ function createAccordionItemsByResults(name, result, index, total = 1) {
     : name === "diff" || name === "decision";
   listItem.setAttribute("data-open", startsOpen ? "true" : "false");
 
+  let label;
   const toggle = () => {
     const isAccordionOpen = listItem.getAttribute("data-open") === "true";
     listItem.setAttribute("data-open", isAccordionOpen ? "false" : "true");
-    accordionContent.setAttribute("aria-expanded", String(!isAccordionOpen));
+    label.setAttribute("aria-expanded", String(!isAccordionOpen));
     if (isWarning) setWarningsOpen(!isAccordionOpen);
   };
 
   const accordionContent = document.createElement("div");
   accordionContent.className = "result-accordion-content";
-  // The header row is the control, so it is the thing that takes focus and
-  // answers the keyboard. Only it toggles: the body is there to be read from,
-  // and ending a selection inside it must not collapse the section -- which for
-  // a warning would also switch off the remembered preference.
-  accordionContent.setAttribute("role", "button");
-  accordionContent.setAttribute("tabindex", "0");
-  accordionContent.setAttribute("aria-expanded", String(startsOpen));
+  // The whole header row toggles for a mouse, but the control a keyboard and a
+  // screen reader find is the label, which is a real button. The copy button
+  // stays outside it: a button nested inside another button is invalid, and an
+  // assistive technology would have to choose between the two.
+  //
+  // Only the header toggles. The body is there to be read from, and ending a
+  // selection inside it must not collapse the section -- which for a warning
+  // would also switch off the remembered preference.
   accordionContent.onclick = (e) => {
-    // The copy button is inside the header and has its own action.
     if (e.target.closest(".result-accordion-copy")) return;
+    if (e.target.closest(".result-accordion-label")) return;
     toggle();
   };
-  accordionContent.onkeydown = (e) => {
-    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
-    e.preventDefault();
-    toggle();
-  };
-  accordionContent.appendChild(createLabel(result, name, index, total));
+  label = createLabel(result, name, index, total);
+  label.setAttribute("aria-expanded", String(startsOpen));
+  label.onclick = toggle;
+  accordionContent.appendChild(label);
   // The cost and the copy button share a right-hand group, so the label still
   // sits opposite them under the row's space-between.
   const actions = document.createElement("div");
@@ -192,15 +193,16 @@ function createAccordionItemsByResults(name, result, index, total = 1) {
   }
   const { text, html } = renderResult(result, name);
   if (text !== "") {
-    const label = sectionLabel(result, name, index, total);
-    actions.appendChild(createCopyButton(text, label));
+    actions.appendChild(
+      createCopyButton(text, sectionLabel(result, name, index, total))
+    );
   }
   accordionContent.appendChild(actions);
 
   const expansibleContent = document.createElement("div");
   expansibleContent.className = "result-accordion-expansible-content";
   expansibleContent.id = `result-body-${sectionCount++}`;
-  accordionContent.setAttribute("aria-controls", expansibleContent.id);
+  label.setAttribute("aria-controls", expansibleContent.id);
   // No wrapper element: most bodies are a <pre> or a <p>, and nesting a block
   // inside an inline <span> makes the browser split it into anonymous blocks.
   expansibleContent.innerHTML = html;
@@ -231,7 +233,11 @@ function renderResult(result, name) {
   }
 
   if (result.isError) {
-    const text = result.error == null ? "" : String(result.error);
+    // A failed expression carries its reason in `error`; a decision that
+    // rejects carries it in `message`, because the decision is a sentence about
+    // the request rather than something that itself went wrong.
+    const reason = result.error ?? result.message;
+    const text = reason == null ? "" : String(reason);
     return {
       text,
       html: `<span class="result-error">${escapeHtml(text)}</span>`,
@@ -270,7 +276,8 @@ function renderText(value) {
 }
 
 function createLabel(item, name, i, total = 1) {
-  const parentContainer = document.createElement("div");
+  const parentContainer = document.createElement("button");
+  parentContainer.type = "button";
   parentContainer.className = "result-accordion-label";
 
   const arrowIcon = document.createElement("i");
