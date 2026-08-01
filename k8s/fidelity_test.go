@@ -16,6 +16,8 @@ package k8s
 
 import (
 	"encoding/json"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -611,6 +613,61 @@ func TestAFalseMatchConditionBeatsAnErroringOne(t *testing.T) {
 			}
 			if got, _ := response.Decision[0].Message.(string); !strings.Contains(got, `matchCondition "never" is false`) {
 				t.Errorf("decision message = %q, want it to name the false condition", got)
+			}
+		})
+	}
+}
+
+// The result panel builds its accordions in the order the JSON keys arrive, so
+// the field order of EvalResponse is a UI decision and not a detail: the
+// decision first because it is the answer, the warnings above the results they
+// qualify, the diff before the object it summarises.
+func TestEvalResponseKeyOrderIsTheReadingOrder(t *testing.T) {
+	want := []string{
+		"decision", "exceededBudgets", "warnings", "matchConditions",
+		"validationVariables", "validations",
+		"messageExpressionVariables", "messageExpressions",
+		"auditAnnotationVariables", "auditAnnotations",
+		"mutationVariables", "mutations",
+		"diff", "finalObject", "notSimulated",
+		"webhookMatchConditions", "cost",
+	}
+	response := reflect.TypeOf(EvalResponse{})
+	var got []string
+	for i := range response.NumField() {
+		tag, _, _ := strings.Cut(response.Field(i).Tag.Get("json"), ",")
+		got = append(got, tag)
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("the panel would render\n  %v\nand the reading order is\n  %v", got, want)
+	}
+}
+
+// A matchCondition must evaluate to a bool. The compiler is given
+// celgo.BoolType as the only accepted return type, so one that returns a string
+// is a compilation error here and a policy the registry refuses -- not a
+// condition that quietly reads as false.
+//
+// Upstream: matchconditions.MatchCondition's ReturnTypes, and
+// plugin/cel/compile.go's "must evaluate to bool but got ...".
+func TestANonBooleanMatchConditionDoesNotCompile(t *testing.T) {
+	for _, expression := range []string{`"yes"`, `1`, `object.metadata.name`} {
+		t.Run(expression, func(t *testing.T) {
+			policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: nonbool\nspec:\n  matchConditions:\n    - name: notabool\n      expression: " + strconv.Quote(expression) + "\n  validations:\n    - expression: \"true\"\n"
+			response := evalFidelityPolicy(t, policy)
+			if len(response.MatchConditions) != 1 {
+				t.Fatalf("got %d matchConditions, want 1", len(response.MatchConditions))
+			}
+			if !response.MatchConditions[0].IsError {
+				t.Fatalf("%s was accepted as a matchCondition", expression)
+			}
+			if !strings.Contains(*response.MatchConditions[0].Error, "must evaluate to bool") {
+				t.Errorf("error = %q, want the compiler's return-type message", *response.MatchConditions[0].Error)
+			}
+			// A policy whose matchCondition cannot compile never matches, and
+			// under the default failurePolicy the request is rejected.
+			if response.Decision[0].Result != false {
+				t.Errorf("decision = %v, want rejected", response.Decision[0].Message)
 			}
 		})
 	}
