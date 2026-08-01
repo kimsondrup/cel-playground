@@ -607,3 +607,75 @@ spec:
 		t.Errorf("the mutation was refused: %s", *response.Mutations[0].Error)
 	}
 }
+
+// The two halves of a MutatingAdmissionPolicy read the same request. The
+// matchConditions are evaluated here and the mutations by upstream's patcher,
+// which rebuilds the request from the admission attributes and the matched
+// group-version it is handed -- so those have to be the same three things
+// newEvalInputs derived `request` from, or one expression answers differently
+// depending on which half of the policy it sits in.
+func TestMutationSeesTheSameRequestAsItsMatchConditions(t *testing.T) {
+	request := `
+kind:
+  group: apps
+  version: v1
+  kind: Deployment
+resource:
+  group: apps
+  version: v1
+  resource: deployments
+requestKind:
+  group: apps
+  version: v1beta1
+  kind: Deployment
+requestResource:
+  group: apps
+  version: v1beta1
+  resource: deployments
+name: nginx
+namespace: default
+operation: UPDATE
+userInfo:
+  username: alice
+`
+	policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: same-request
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  matchConditions:
+  - name: matched-at-v1
+    expression: "request.kind.version == 'v1' && request.requestKind.version == 'v1beta1' && request.operation == 'UPDATE'"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{
+          metadata: Object.metadata{
+            annotations: {
+              "kind": request.kind.version,
+              "requestKind": request.requestKind.version,
+              "operation": string(request.operation)
+            }
+          }
+        }
+`
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "object.yaml"), nil, []byte(request), nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.MatchConditions) != 1 || response.MatchConditions[0].Result != true {
+		t.Fatalf("the matchCondition did not read the request as expected: %s", out)
+	}
+	for _, want := range []string{"kind: v1", "requestKind: v1beta1", "operation: UPDATE"} {
+		if !strings.Contains(response.FinalObject, want) {
+			t.Errorf("the mutation did not read %q from the same request the matchCondition saw:\n%s", want, response.FinalObject)
+		}
+	}
+}
