@@ -89,7 +89,7 @@ function run() {
       go.run(result.instance);
       if (globalThis.kubernetesEnvVersion) {
         document.getElementById("kubernetes-env").innerText =
-          ` | Kubernetes ${globalThis.kubernetesEnvVersion} CEL`;
+          ` | Kubernetes ${globalThis.kubernetesEnvVersion} CEL (policy modes)`;
       }
       document.getElementById("run").disabled = false;
       document.getElementById("output").placeholder =

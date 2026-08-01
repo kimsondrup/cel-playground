@@ -182,7 +182,7 @@ function createLabel(item, name, i) {
     errorIcon.className = "ph ph-x-circle ph-fill result-accordion-error-icon";
 
     const errorIconWithTooltip = createTooltip({
-      contentText: "Validation compilation failed.",
+      contentText: "This entry reported an error. Expand it to read the message.",
       triggerElement: errorIcon,
       position: {
         left: 50,

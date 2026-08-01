@@ -124,6 +124,10 @@ type EvalResult struct {
 // batches appears in two lists because a cluster evaluates, and charges for, it
 // twice.
 type EvalResponse struct {
+	// ExceededBudgets names the cost budgets this evaluation ran past, and is
+	// absent when it ran past none. It comes first because it is the one thing
+	// in the panel that says the request would have been rejected outright.
+	ExceededBudgets            []*EvalResult   `json:"exceededBudgets,omitempty"`
 	MatchConditions            []*EvalResult   `json:"matchConditions,omitempty"`
 	ValidationVariables        []*EvalVariable `json:"validationVariables,omitempty"`
 	Validations                []*EvalResult   `json:"validations,omitempty"`
@@ -132,10 +136,7 @@ type EvalResponse struct {
 	AuditAnnotationVariables   []*EvalVariable `json:"auditAnnotationVariables,omitempty"`
 	AuditAnnotations           []*EvalResult   `json:"auditAnnotations,omitempty"`
 	WebhookMatchConditions     [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
-	// ExceededBudgets names the cost budgets this evaluation ran past, and is
-	// absent when it ran past none.
-	ExceededBudgets []*EvalResult `json:"exceededBudgets,omitempty"`
-	Cost            *uint64       `json:"cost,omitempty"`
+	Cost                       *uint64         `json:"cost,omitempty"`
 }
 
 func getResults(val ref.Val) (any, *string) {
@@ -186,11 +187,11 @@ func generateEvalVariables(scope *evalScope) []*EvalVariable {
 func generateEvalResults(responses evalResponses) []*EvalResult {
 	evals := []*EvalResult{}
 	for _, eval := range responses {
-		// A nil entry keeps a section index-aligned with the one it annotates:
-		// messageExpressions has a slot per validation, empty where the
-		// validation declares no messageExpression.
+		// A section may be sparse -- messageExpressions has a slot per
+		// validation and most validations declare none. An empty row is
+		// indistinguishable from one that evaluated to nothing, so the slot is
+		// dropped and the rows that remain name the validation they belong to.
 		if eval == nil {
-			evals = append(evals, &EvalResult{})
 			continue
 		}
 		value, err := getResults(eval.val)
@@ -328,6 +329,7 @@ func (s *evalSections) response() *EvalResponse {
 	cost := matchConditions + validations + auditAnnotations
 
 	return &EvalResponse{
+		ExceededBudgets:            s.exceededBudgets(),
 		MatchConditions:            generateEvalResults(s.matchConditions),
 		ValidationVariables:        generateEvalVariables(s.validationScope),
 		Validations:                generateEvalResults(s.validations),
@@ -336,7 +338,6 @@ func (s *evalSections) response() *EvalResponse {
 		AuditAnnotationVariables:   generateEvalVariables(s.auditAnnotationScope),
 		AuditAnnotations:           generateEvalResults(s.auditAnnotations),
 		WebhookMatchConditions:     generateEvalArrayResults(s.webhookMatchConditions),
-		ExceededBudgets:            s.exceededBudgets(),
 		Cost:                       &cost,
 	}
 }

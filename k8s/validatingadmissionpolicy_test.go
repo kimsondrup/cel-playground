@@ -285,6 +285,7 @@ func TestValidationEval(t *testing.T) {
 				Cost:  uint64ptr(7),
 			}},
 			MessageExpressions: []*k8s.EvalResult{{
+				Name:   strptr("validations[0]"),
 				Result: "only prod images are allowed in namespace default",
 				Cost:   uint64ptr(16),
 			}},

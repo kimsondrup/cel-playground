@@ -134,9 +134,10 @@ func (s *evalSections) evaluatePolicy(compiler *policyCompiler, inputs *evalInpu
 }
 
 // evaluateMessageExpressions returns one entry per validation, nil where the
-// validation has no messageExpression. The returned slice is also published as
-// its own section, so the cost and any failure of a messageExpression is
-// visible next to the validation it belongs to, rather than folded into it.
+// validation has no messageExpression. The non-nil ones are also published as
+// their own section, named after the validation each belongs to, so the cost
+// and any failure of a messageExpression is visible rather than folded into the
+// validation's own row.
 func (s *evalSections) evaluateMessageExpressions(compiler *policyCompiler, inputs *evalInputs, celInfo *CelInformation) evalResponses {
 	messages := make(evalResponses, len(celInfo.validations))
 	for i, validation := range celInfo.validations {
@@ -146,7 +147,7 @@ func (s *evalSections) evaluateMessageExpressions(compiler *policyCompiler, inpu
 		if s.messageScope == nil {
 			s.messageScope = compiler.newScope(inputs, messageBindings)
 		}
-		messages[i] = s.messageScope.evalExpression("", &messageExpression{expression: validation.messageExpression}, declsWithoutAuthorizer)
+		messages[i] = s.messageScope.evalExpression(fmt.Sprintf("validations[%d]", i), &messageExpression{expression: validation.messageExpression}, declsWithoutAuthorizer)
 	}
 	if s.messageScope != nil {
 		s.messageExpressions = messages

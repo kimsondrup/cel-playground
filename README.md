@@ -31,6 +31,26 @@ one minor behind the apiserver the playground is built from.
 Take a look at the environment options in [eval/eval.go](eval/eval.go) for the
 CEL mode.
 
+## Reading the result panel
+
+An apiserver evaluates a `ValidatingAdmissionPolicy` in four batches --
+`matchConditions`, `validations`, `messageExpressions`, `auditAnnotations` --
+and the panel has a section per batch, plus a section for the `spec.variables`
+each batch read.
+
+That is why the same variable can appear more than once, with the same value and
+the same cost. Each batch builds its own copy of `variables`, so a variable read
+from both a validation and an audit annotation is evaluated twice and charged
+twice. The total at the top is the sum of everything that ran.
+
+The total is not a budget, though, and a policy is never rejected for exceeding
+it. There are three separate budgets: `matchConditions` get 2,500,000 each,
+`validations` and `messageExpressions` share 10,000,000, and `auditAnnotations`
+start again from a full 10,000,000. When a run goes past one of them an
+**exceededBudgets** section appears at the top of the panel saying which. A real
+cluster would abandon the rest of that chain and reject the request; the
+playground keeps going so the expression that overran is still visible.
+
 ## The RBAC tab
 
 Policies and webhook match conditions can ask whether the user making the

@@ -58,7 +58,7 @@
       "dataNamespace": "",
       "dataRequest": "# The RBAC tab answers questions about this user.\nuserInfo:\n  username: alice\n  groups:\n    - system:authenticated\n    - platform-team\n",
       "dataAuthorizer": "# Real RBAC objects, resolved by Kubernetes' own RBAC authorizer. Change\n# the binding's subject to someone other than alice, or delete it, and the\n# validation fails.\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: deployment-escalator\n  namespace: default\nrules:\n  - apiGroups: [\"apps\"]\n    resources: [\"deployments\"]\n    verbs: [\"escalate\"]\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: alice-deployment-escalator\n  namespace: default\nsubjects:\n  - kind: User\n    apiGroup: rbac.authorization.k8s.io\n    name: alice\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: deployment-escalator\n",
-      "category": "Authorizer"
+      "category": "RBAC"
     }
   ],
   "versions": {

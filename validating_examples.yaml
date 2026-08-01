@@ -493,4 +493,4 @@ examples:
         kind: Role
         name: deployment-escalator
 
-    category: "Authorizer"
+    category: "RBAC"

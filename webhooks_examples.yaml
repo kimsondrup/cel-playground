@@ -402,7 +402,7 @@ examples:
       # same Role, ClusterRole, RoleBinding and ClusterRoleBinding objects a
       # cluster does. The subject is request.userInfo.
 
-    category: "Authorizer"
+    category: "RBAC"
 
   - name: "Authorizer Ignore breakglass"
     webhooks: |
@@ -530,5 +530,5 @@ examples:
         kind: ClusterRole
         name: webhook-breakglass
 
-    category: "Authorizer"
+    category: "RBAC"
 
