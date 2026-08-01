@@ -214,6 +214,11 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 			setMutationError(result, err)
 			continue
 		}
+		evaluator := compiler.compiler.CompileMutatingEvaluator(accessor, patchDeclarations, environment.NewExpressions)
+		if compileErrors := evaluator.CompilationErrors(); len(compileErrors) > 0 {
+			setMutationError(result, errors.Join(compileErrors...))
+			continue
+		}
 		// A merge needs the schema of the type it is merging into, and for a
 		// custom resource a cluster reads that from the CRD. Without it there is
 		// no honest answer: a CRD that declares listType=map merges by key, and
@@ -227,11 +232,6 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 					"key or refuses the patch as atomic depending on what it says. The playground carries "+
 					"the schemas of the built-in Kubernetes APIs only; a JSONPatch needs none and still works",
 				gvk.GroupVersion()))
-			continue
-		}
-		evaluator := compiler.compiler.CompileMutatingEvaluator(accessor, patchDeclarations, environment.NewExpressions)
-		if compileErrors := evaluator.CompilationErrors(); len(compileErrors) > 0 {
-			setMutationError(result, errors.Join(compileErrors...))
 			continue
 		}
 
