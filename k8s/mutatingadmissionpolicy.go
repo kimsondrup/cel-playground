@@ -22,7 +22,9 @@ import (
 	"strings"
 
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	admissionv1 "k8s.io/api/admission/v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/admission"
 	celplugin "k8s.io/apiserver/pkg/admission/plugin/cel"
@@ -206,28 +208,16 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		// Each mutation gets a whole budget: the dispatcher hands
 		// celconfig.RuntimeCELCostBudget to every Patch call, so the budget is
 		// per mutation and not per policy.
+		//
+		// A patcher takes a MutatingEvaluator and calls ForInput itself, keeping
+		// neither the cost nor the value. Both are read off a decorator in that
+		// slot, so the expression is evaluated exactly once -- by upstream, on
+		// the way to being applied -- and the panel still gets a cost.
 		budget := int64(celconfig.RuntimeCELCostBudget)
 		scope := compiler.newMutationScope()
 		s.mutationScopes[len(s.mutationScopes)-1] = scope.scope
-		evaluation, remaining, err := evaluator.ForInput(scope, versionedAttributes, inputs.admissionRequest, bindings, inputs.namespace, budget)
-		if err != nil {
-			setMutationError(result, err)
-			continue
-		}
-		if evaluation.Error != nil {
-			setMutationError(result, evaluation.Error)
-			continue
-		}
-		// What the expression itself cost. The budget also paid for the
-		// variables it dereferenced, and those are reported one by one.
-		expressionCost := uint64(budget-remaining) - calculateVariablesCost(scope.scope)
-		result.Cost = &expressionCost
-
-		// Patch evaluates the expression a second time, because upstream's
-		// patchers take the expression rather than its value. CEL is
-		// side-effect free so the two agree; the throwaway composition context
-		// keeps the second pass from being charged or reported twice.
-		patched, err := newPatcher(evaluator).Patch(compiler.compiler.CreateContext(context.Background()), patch.Request{
+		metered := &meteredEvaluator{MutatingEvaluator: evaluator}
+		patched, err := newPatcher(metered).Patch(scope, patch.Request{
 			MatchedResource:     inputs.attributes.GetResource(),
 			VersionedAttributes: versionedAttributes,
 			ObjectInterfaces:    objectInterfaces,
@@ -235,6 +225,12 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 			Namespace:           inputs.namespace,
 			TypeConverter:       typeConverter,
 		}, budget)
+		if metered.charged {
+			// What the expression itself cost. The budget also paid for the
+			// variables it dereferenced, and those are reported one by one.
+			expressionCost := uint64(budget-metered.remaining) - calculateVariablesCost(scope.scope)
+			result.Cost = &expressionCost
+		}
 		if err != nil {
 			setMutationError(result, err)
 			continue
@@ -286,6 +282,28 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 	}
 	s.finalObject = current
 	s.diff = unifiedDiff(original, current, "object", "mutated")
+}
+
+// meteredEvaluator records what one mutation's expression cost.
+//
+// patch.Patcher takes a plugincel.MutatingEvaluator and calls ForInput itself,
+// then throws the remaining budget away and returns only the patched object.
+// Sitting in that slot is the only place the cost is visible without evaluating
+// the expression a second time.
+type meteredEvaluator struct {
+	celplugin.MutatingEvaluator
+	remaining int64
+	// charged distinguishes a mutation that ran and cost nothing from one whose
+	// patcher never got as far as evaluating it.
+	charged bool
+}
+
+func (e *meteredEvaluator) ForInput(ctx context.Context, versionedAttr *admission.VersionedAttributes, request *admissionv1.AdmissionRequest, inputs celplugin.OptionalVariableBindings, namespace *corev1.Namespace, budget int64) (celplugin.EvaluationResult, int64, error) {
+	evaluation, remaining, err := e.MutatingEvaluator.ForInput(ctx, versionedAttr, request, inputs, namespace, budget)
+	if err == nil {
+		e.remaining, e.charged = remaining, true
+	}
+	return evaluation, remaining, err
 }
 
 // failEveryMutation reports one reason against every mutation, for the failures

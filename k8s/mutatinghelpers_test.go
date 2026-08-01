@@ -16,6 +16,7 @@ package k8s_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -219,14 +220,27 @@ func TestMutationRejectsAMalformedPatchType(t *testing.T) {
 
 // Each mutation is patched on its own with a whole cost budget, the way the
 // dispatcher hands celconfig.RuntimeCELCostBudget to every Patch call. Two
-// mutations that each stay inside it do not add up to an overrun.
+// mutations that each stay inside it do not add up to an overrun, however much
+// they cost together.
 func TestMutationBudgetsArePerMutation(t *testing.T) {
-	// One authorizer check is ~350,000 units. Six of them in one expression run
-	// past two million but nowhere near ten, so a shared budget and a per
-	// mutation one are told apart by the total rather than by either chain.
-	check := "string(authorizer.group('apps').resource('deployments').check('update').allowed())"
-	mutation := "  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{metadata: Object.metadata{annotations: {\"a\": " + check + "}}}\n"
-	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: budgets\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  mutations:\n" + mutation + mutation
+	// An authorizer check costs ~350,000, and celconfig.PerCallLimit caps any
+	// one expression at 1,000,000 -- so the only way to spend a budget is
+	// across variables. Eight of two checks each is ~5.6 million per mutation:
+	// inside a budget of its own, and over ten million once two mutations share
+	// one. Sharing and not sharing are therefore told apart by whether anything
+	// is reported at all, not by a margin.
+	const variables = 8
+	check := func(verb string) string {
+		return fmt.Sprintf("string(authorizer.group('apps').resource('deployments').check('%s').allowed())", verb)
+	}
+	declarations, reads := "", make([]string, 0, variables)
+	for i := range variables {
+		declarations += fmt.Sprintf("  - name: v%d\n    expression: \"%s + %s\"\n",
+			i, check(fmt.Sprintf("a%d", i)), check(fmt.Sprintf("b%d", i)))
+		reads = append(reads, fmt.Sprintf("%q: variables.v%d", fmt.Sprintf("v%d", i), i))
+	}
+	mutation := "  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{metadata: Object.metadata{annotations: {" + strings.Join(reads, ", ") + "}}}\n"
+	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: budgets\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  variables:\n" + declarations + "  mutations:\n" + mutation + mutation
 
 	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "object.yaml"), nil, nil, nil)
 	if err != nil {
@@ -243,11 +257,102 @@ func TestMutationBudgetsArePerMutation(t *testing.T) {
 		if m.IsError {
 			t.Fatalf("mutations[%d] failed: %s", i, *m.Error)
 		}
-		if m.Cost == nil || *m.Cost == 0 {
-			t.Fatalf("mutations[%d] reported no cost", i)
-		}
+	}
+	if *response.Cost <= 10000000 {
+		t.Fatalf("the two mutations cost %d together, which is inside one budget: this case no longer distinguishes a shared budget from a per-mutation one", *response.Cost)
 	}
 	if len(response.ExceededBudgets) != 0 {
 		t.Errorf("a budget was reported as exceeded: %v", *response.ExceededBudgets[0].Error)
+	}
+}
+
+// A variable is bound afresh for every mutation, because upstream builds a new
+// lazy `variables` map per ForInput. Two mutations that read one variable
+// evaluate it twice and are charged twice, and the panel shows both.
+func TestMutationVariablesAreChargedPerMutation(t *testing.T) {
+	mutation := "  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{metadata: Object.metadata{labels: {%q: variables.appName}}}\n"
+	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: shared-variable\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  variables:\n  - name: appName\n    expression: \"object.metadata.labels['app']\"\n  mutations:\n" +
+		fmt.Sprintf(mutation, "first") + fmt.Sprintf(mutation, "second")
+
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "object.yaml"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.MutationVariables) != 2 {
+		t.Fatalf("got %d variable rows, want one per mutation: %v", len(response.MutationVariables), response.MutationVariables)
+	}
+	for i, want := range []string{"mutations[0].appName", "mutations[1].appName"} {
+		if response.MutationVariables[i].Name != want {
+			t.Errorf("variable %d is named %q, want %q", i, response.MutationVariables[i].Name, want)
+		}
+		if response.MutationVariables[i].Cost == nil || *response.MutationVariables[i].Cost == 0 {
+			t.Errorf("variable %d was not charged", i)
+		}
+	}
+	// The total has to carry both, or a variable read twice is billed once.
+	var variables uint64
+	for _, v := range response.MutationVariables {
+		variables += *v.Cost
+	}
+	var expressions uint64
+	for _, m := range response.Mutations {
+		expressions += *m.Cost
+	}
+	if *response.Cost != variables+expressions {
+		t.Errorf("total cost %d, want %d (%d of variables and %d of expressions)", *response.Cost, variables+expressions, variables, expressions)
+	}
+}
+
+// The apiserver's registry compiles a policy's matchConditions with a plain,
+// non-composited compiler, so naming `variables` there is a compilation error
+// and no cluster ever stores such a policy. That is true of a
+// MutatingAdmissionPolicy for the same reason it is true of a validating one.
+//
+// Upstream: pkg/apis/admissionregistration/validation.validateMatchConditionsExpression,
+// which uses getStrictStatelessCELCompiler().
+func TestMutationMatchConditionsCannotReadVariables(t *testing.T) {
+	policy := `apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: variables-in-matchconditions
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: Never
+  variables:
+  - name: appName
+    expression: "object.metadata.labels['app']"
+  matchConditions:
+  - name: uses-a-variable
+    expression: "variables.appName == 'nginx'"
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >
+        Object{metadata: Object.metadata{labels: {"touched": "true"}}}
+`
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "object.yaml"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.MatchConditions) != 1 {
+		t.Fatalf("got %d matchConditions, want 1", len(response.MatchConditions))
+	}
+	condition := response.MatchConditions[0]
+	if !condition.IsError {
+		t.Fatalf("the matchCondition compiled, want the error the registry gives")
+	}
+	if !strings.Contains(*condition.Error, "undeclared reference to 'variables'") {
+		t.Errorf("error = %q, want it to name the undeclared reference", *condition.Error)
+	}
+	if len(response.Mutations) != 0 {
+		t.Errorf("a mutation ran behind a matchCondition that cannot compile")
 	}
 }
