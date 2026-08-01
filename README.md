@@ -91,10 +91,10 @@ stay inside it never add up to an overrun, and a variable both of them read is
 evaluated -- and charged -- once for each. A single expression is separately
 capped at 1,000,000 whatever the budget says.
 
-Most expressions cost tens of units. The exception is an authorizer check,
-which upstream prices at roughly 350,000 — so a policy that asks three
-authorization questions has spent a tenth of a mutation's budget, and the
-numbers in the panel jump accordingly.
+Most expressions cost tens of units. The exception is an authorizer check, which
+upstream prices at roughly 350,000 -- so a policy that asks three authorization
+questions has spent a tenth of a mutation's budget, and the numbers in the panel
+jump accordingly.
 
 ## Mutating Admission Policy
 
@@ -109,9 +109,7 @@ schema of the type being mutated: `spec.template.spec.initContainers` is
 `listType=map` keyed by `name`, so adding one entry merges by name rather than
 replacing the list. That schema is compiled into the binary, generated from the
 same `+listType` markers a cluster's own `/openapi/v3` is generated from, and it
-covers the built-in APIs only. A custom resource has no schema here and falls
-back to treating every list as atomic — which is what a cluster does with a
-schema it cannot resolve — and the panel says so.
+covers the built-in APIs only.
 
 A patched built-in is read back through that schema, because a cluster decodes
 the result strictly. A misspelled field in an `Object{}` initializer or a quoted
@@ -120,11 +118,11 @@ refused there, rather than appearing in the output as though it had worked. On a
 cluster that refusal is an internal error rather than a policy failure, so
 `failurePolicy: Ignore` does not rescue it, and the decision says so.
 
-An `ApplyConfiguration` on a **custom resource** is refused rather than guessed.
-A cluster reads the CRD's schema and then either merges a list by key or refuses
-the patch outright, depending on whether the CRD declares `x-kubernetes-list-type`;
-with neither the schema nor the CRD in hand there is no answer worth giving. A
-`JSONPatch` needs no schema and works on any object.
+An `ApplyConfiguration` on a **custom resource** is therefore refused rather than
+guessed. A cluster reads the CRD's schema and then either merges a list by key or
+refuses the patch outright, depending on whether the CRD declares
+`x-kubernetes-list-type`; with neither the schema nor the CRD in hand there is no
+answer worth giving. A `JSONPatch` needs no schema and works on any object.
 
 What the mode parses and does not act on is repeated on screen in a
 **notSimulated** section, so a policy that would behave differently on a cluster
