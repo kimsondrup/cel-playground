@@ -158,7 +158,7 @@ spec:
     - key: annotation
       valueExpression: "'value'"
 `, version)
-			celInfo, err := extractCelInformation([]byte(policy))
+			celInfo, err := extractCelInformation([]byte(policy), policyKind)
 			if err != nil {
 				t.Fatalf("extractCelInformation() error: %v", err)
 			}
@@ -208,7 +208,7 @@ func TestRejectsInputItCannotEvaluate(t *testing.T) {
 	}}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := extractCelInformation([]byte(tt.input))
+			_, err := extractCelInformation([]byte(tt.input), policyKind)
 			if err == nil {
 				t.Fatalf("extractCelInformation() succeeded, want error containing %q", tt.wantErr)
 			}
@@ -287,7 +287,7 @@ spec:
     - Name: mc
       Expression: "true"
 `
-	celInfo, err := extractCelInformation([]byte(policy))
+	celInfo, err := extractCelInformation([]byte(policy), policyKind)
 	if err != nil {
 		t.Fatalf("extractCelInformation() error: %v", err)
 	}
@@ -352,7 +352,7 @@ webhooks:
       - name: not-kube-system
         expression: "request.namespace != 'kube-system'"
 `, version, kind)
-				celInfo, err := extractCelInformation([]byte(configuration))
+				celInfo, err := extractCelInformation([]byte(configuration), webhookKinds...)
 				if err != nil {
 					t.Fatalf("extractCelInformation() error: %v", err)
 				}
@@ -453,5 +453,104 @@ spec:` + paramKind + `
 		t.Errorf("a policy without paramKind compiled a reference to params: %s", out)
 	} else if !strings.Contains(*response.Validations[0].Error, "undeclared reference to 'params'") {
 		t.Errorf("unexpected error: %s", *response.Validations[0].Error)
+	}
+}
+
+// extractPolicyCelInformation and extractMatchConditions read a hand-written
+// list of fields. If a Kubernetes bump adds another expression to these types,
+// nothing else would notice: the policy would evaluate, quietly missing a
+// rule. This enumerates every string field of the v1 types whose name says it
+// carries CEL, and fails when that set changes.
+func TestEveryExpressionFieldIsAccountedFor(t *testing.T) {
+	known := map[string]bool{
+		"ValidatingAdmissionPolicySpec.matchConditions[].expression":       true,
+		"ValidatingAdmissionPolicySpec.validations[].expression":           true,
+		"ValidatingAdmissionPolicySpec.validations[].messageExpression":    true,
+		"ValidatingAdmissionPolicySpec.auditAnnotations[].valueExpression": true,
+		"ValidatingAdmissionPolicySpec.variables[].expression":             true,
+		"ValidatingWebhook.matchConditions[].expression":                   true,
+		"MutatingWebhook.matchConditions[].expression":                     true,
+		"ValidatingAdmissionPolicySpec.matchConstraints.matchPolicy":       false,
+	}
+	roots := map[string]reflect.Type{
+		"ValidatingAdmissionPolicySpec": reflect.TypeOf(admissionregistrationv1.ValidatingAdmissionPolicySpec{}),
+		"ValidatingWebhook":             reflect.TypeOf(admissionregistrationv1.ValidatingWebhook{}),
+		"MutatingWebhook":               reflect.TypeOf(admissionregistrationv1.MutatingWebhook{}),
+	}
+
+	found := map[string]bool{}
+	for name, root := range roots {
+		collectExpressionFields(root, name, found, map[reflect.Type]bool{})
+	}
+
+	for path := range found {
+		if !known[path] {
+			t.Errorf("%s carries a CEL expression that extractCelInformation does not read", path)
+		}
+	}
+	for path, isExpression := range known {
+		if isExpression && !found[path] {
+			t.Errorf("%s is no longer declared; the extractor reads a field that does not exist", path)
+		}
+	}
+}
+
+// collectExpressionFields records every string-typed field whose JSON name ends
+// in "expression" or "Expression", which is how this API group names CEL.
+func collectExpressionFields(t reflect.Type, prefix string, found map[string]bool, seen map[reflect.Type]bool) {
+	cardinality := ""
+	for {
+		switch t.Kind() {
+		case reflect.Pointer:
+			t = t.Elem()
+			continue
+		case reflect.Slice, reflect.Array:
+			cardinality = "[]"
+			t = t.Elem()
+			continue
+		}
+		break
+	}
+	if t.Kind() != reflect.Struct || !strings.Contains(t.PkgPath(), "admissionregistration") {
+		if t.Kind() == reflect.String && strings.HasSuffix(strings.ToLower(prefix), "expression") {
+			found[prefix] = true
+		}
+		return
+	}
+	if seen[t] {
+		return
+	}
+	seen[t] = true
+	defer delete(seen, t)
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		collectExpressionFields(field.Type, prefix+cardinality+"."+name, found, seen)
+	}
+}
+
+// A configuration pasted into the policy editor, or a policy pasted into the
+// webhook editor, decodes cleanly and carries nothing the other mode reads.
+// Saying so beats rendering an empty panel.
+func TestEachModeRejectsTheOtherModesKind(t *testing.T) {
+	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: p\nspec:\n  validations:\n    - expression: \"true\"\n"
+	configuration := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingWebhookConfiguration\nwebhooks: []\n"
+
+	if _, err := EvalWebhook([]byte(policy), nil, nil, nil, nil); err == nil {
+		t.Errorf("EvalWebhook() accepted a ValidatingAdmissionPolicy")
+	} else if !strings.Contains(err.Error(), "belongs in the other one") {
+		t.Errorf("EvalWebhook() error = %q", err)
+	}
+
+	if _, err := EvalValidatingAdmissionPolicy([]byte(configuration), nil, nil, nil, nil, nil); err == nil {
+		t.Errorf("EvalValidatingAdmissionPolicy() accepted a ValidatingWebhookConfiguration")
+	} else if !strings.Contains(err.Error(), "belongs in the other one") {
+		t.Errorf("EvalValidatingAdmissionPolicy() error = %q", err)
 	}
 }

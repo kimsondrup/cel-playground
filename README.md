@@ -31,6 +31,18 @@ one minor behind the apiserver the playground is built from.
 Take a look at the environment options in [eval/eval.go](eval/eval.go) for the
 CEL mode.
 
+## What the expressions can see
+
+| | |
+|---|---|
+| `object` | the object from the request; null for DELETE |
+| `oldObject` | the existing object; null for CREATE |
+| `request` | the AdmissionRequest tab, read strictly |
+| `namespaceObject` | the Namespace tab, trimmed the way a cluster trims it. Null while matchConditions are evaluated, because the matcher passes no namespace |
+| `variables` | `spec.variables`, lazily. Not available in matchConditions: the apiserver refuses to store a policy whose matchConditions name it |
+| `authorizer`, `authorizer.requestResource` | the RBAC tab. Not declared for a `messageExpression`, and declared but unbound for an `auditAnnotation`, both as on a cluster |
+| `params` | declared only when the policy declares `spec.paramKind`. There is no params tab, so it is **null** — an expression that reads a field of it fails, as it would on a cluster whose paramRef selected nothing |
+
 ## Reading the result panel
 
 An apiserver evaluates a `ValidatingAdmissionPolicy` in four batches --

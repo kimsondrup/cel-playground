@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
 
-	"github.com/undistro/cel-playground/oracle"
+	"github.com/undistro/cel-playground/k8s/oracle"
 )
 
 // TestCostMetricsExposure enumerates everything a real apiserver publishes

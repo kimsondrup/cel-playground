@@ -18,6 +18,7 @@ package oracle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -72,10 +73,6 @@ func decisionFrom(err error) Decision {
 	}
 	d := Decision{Allowed: false, Err: err, Message: err.Error()}
 	var statusErr apierrors.APIStatus
-	if apierrors.IsAlreadyExists(err) {
-		// Not an admission outcome; surface it as-is so the caller notices.
-		d.Message = err.Error()
-	}
 	if ok := asStatus(err, &statusErr); ok {
 		st := statusErr.Status()
 		d.Message = st.Message
@@ -89,24 +86,7 @@ func decisionFrom(err error) Decision {
 }
 
 func asStatus(err error, out *apierrors.APIStatus) bool {
-	if s, ok := err.(apierrors.APIStatus); ok {
-		*out = s
-		return true
-	}
-	// errors.As equivalent without importing errors twice.
-	type causer interface{ Unwrap() error }
-	for e := err; e != nil; {
-		if s, ok := e.(apierrors.APIStatus); ok {
-			*out = s
-			return true
-		}
-		c, ok := e.(causer)
-		if !ok {
-			return false
-		}
-		e = c.Unwrap()
-	}
-	return false
+	return errors.As(err, out)
 }
 
 // MappingFor resolves an object's GVK to a REST mapping.
@@ -302,10 +282,10 @@ func (o *Oracle) WaitPoliciesActive(ctx context.Context) error {
 		return fmt.Errorf("readiness marker %s never fired (last decision: %s): %w", id, last, err)
 	}
 
-	// The marker is now removed by the deferred cleanup. Wait for its removal
-	// to be observed as well, otherwise a later probe ConfigMap could still be
-	// denied by a stale marker -- and, more importantly, the subject policy
-	// must not be evaluated alongside a marker that is still loaded.
+	// The deferred cleanup removes the marker. Nothing waits for that removal
+	// to be observed, and nothing needs to: every marker is scoped to a unique
+	// id by its objectSelector, so a marker still loaded when the next probe
+	// runs cannot match it.
 	return nil
 }
 

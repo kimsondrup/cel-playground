@@ -18,6 +18,13 @@ jobs:
       - name: test
         run: make test
 
+      # The oracle is a nested module, so `make test` does not reach it. Its
+      # cluster-backed tests skip without envtest assets; the in-process ones,
+      # which are the fence on every claim the evaluator makes about matching
+      # the apiserver, run here.
+      - name: differential oracle
+        run: make test-oracle
+
       - name: check license headers
         run: make checklicense
 

@@ -58,7 +58,7 @@ func TestWebhookEval(t *testing.T) {
 		webhook: "webhook1.yaml",
 		updated: "updated1.yaml",
 		expected: k8s.EvalResponse{
-			WebhookMatchConditions: [][]*k8s.EvalResult{{{Name: strptr("include-bootcamp"), Result: true, Cost: uint64ptr(6)}}},
+			WebhookMatchConditions: [][]*k8s.EvalResult{{{Name: strptr("webhooks[0].include-bootcamp"), Result: true, Cost: uint64ptr(6)}}},
 			Cost:                   uint64ptr(6),
 		},
 	}, {
@@ -66,7 +66,7 @@ func TestWebhookEval(t *testing.T) {
 		webhook: "webhook2.yaml",
 		updated: "updated2.yaml",
 		expected: k8s.EvalResponse{
-			WebhookMatchConditions: [][]*k8s.EvalResult{{{Name: strptr("exclude-bootcamp"), Result: false, Cost: uint64ptr(7)}}},
+			WebhookMatchConditions: [][]*k8s.EvalResult{{{Name: strptr("webhooks[0].exclude-bootcamp"), Result: false, Cost: uint64ptr(7)}}},
 			Cost:                   uint64ptr(7),
 		},
 	}, {
@@ -76,8 +76,8 @@ func TestWebhookEval(t *testing.T) {
 		request: "request3.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{{
-				{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)},
-				{Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)},
+				{Name: strptr("webhooks[0].exclude-leases"), Result: true, Cost: uint64ptr(5)},
+				{Name: strptr("webhooks[0].exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)},
 			}},
 			Cost: uint64ptr(11),
 		},
@@ -92,7 +92,7 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "authorizer4.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{{
-				{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(350006)},
+				{Name: strptr("webhooks[0].breakglass"), Result: false, Cost: uint64ptr(350006)},
 			}},
 			Cost: uint64ptr(350006),
 		},
@@ -104,8 +104,8 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "multi authorizer1.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{
-				{{Name: strptr("breakglass"), Result: true, Cost: uint64ptr(350006)}},
-				{{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)}},
+				{{Name: strptr("webhooks[0].breakglass"), Result: true, Cost: uint64ptr(350006)}},
+				{{Name: strptr("webhooks[1].exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("webhooks[1].exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)}},
 			},
 			Cost: uint64ptr(350017),
 		},
@@ -117,8 +117,8 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "multi authorizer2.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{
-				{{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(350006)}},
-				{{Name: strptr("exclude-bootcamp"), Result: false, Cost: uint64ptr(7)}},
+				{{Name: strptr("webhooks[0].breakglass"), Result: false, Cost: uint64ptr(350006)}},
+				{{Name: strptr("webhooks[1].exclude-bootcamp"), Result: false, Cost: uint64ptr(7)}},
 			},
 			Cost: uint64ptr(350013),
 		},
@@ -130,8 +130,8 @@ func TestWebhookEval(t *testing.T) {
 		authorizer: "multi authorizer3.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{
-				{{Name: strptr("breakglass"), Result: false, Cost: uint64ptr(350006)}},
-				{{Name: strptr("exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)}},
+				{{Name: strptr("webhooks[0].breakglass"), Result: false, Cost: uint64ptr(350006)}},
+				{{Name: strptr("webhooks[1].exclude-leases"), Result: true, Cost: uint64ptr(5)}, {Name: strptr("webhooks[1].exclude-kubelet-requests"), Result: true, Cost: uint64ptr(6)}},
 			},
 			Cost: uint64ptr(350017),
 		},
@@ -143,7 +143,7 @@ func TestWebhookEval(t *testing.T) {
 		updated: "updated2.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{{
-				{Name: strptr("exclude-bootcamp"), Result: false, Cost: uint64ptr(6)},
+				{Name: strptr("webhooks[0].exclude-bootcamp"), Result: false, Cost: uint64ptr(6)},
 			}},
 			Cost: uint64ptr(6),
 		},
@@ -158,8 +158,8 @@ func TestWebhookEval(t *testing.T) {
 		updated: "updated5.yaml",
 		expected: k8s.EvalResponse{
 			WebhookMatchConditions: [][]*k8s.EvalResult{{
-				{Name: strptr("eviction-enabled"), Result: true, Cost: uint64ptr(4)},
-				{Name: strptr("odd-replicas"), Result: true, Cost: uint64ptr(5)},
+				{Name: strptr("webhooks[0].eviction-enabled"), Result: true, Cost: uint64ptr(4)},
+				{Name: strptr("webhooks[0].odd-replicas"), Result: true, Cost: uint64ptr(5)},
 			}},
 			Cost: uint64ptr(9),
 		},

@@ -1,4 +1,4 @@
-module github.com/undistro/cel-playground/oracle
+module github.com/undistro/cel-playground/k8s/oracle
 
 go 1.26.0
 

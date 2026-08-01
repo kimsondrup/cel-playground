@@ -60,7 +60,7 @@ import (
 //     too: failurePolicy=Fail rejects the request and failurePolicy=Ignore
 //     ignores the policy, and neither runs the validations.
 func EvalValidatingAdmissionPolicy(policyInput, oldObjectInput, objectValueInput, namespaceInput, requestInput, authorizerInput []byte) (string, error) {
-	celInfo, err := extractCelInformation(policyInput)
+	celInfo, err := extractCelInformation(policyInput, policyKind)
 	if err != nil {
 		return "", err
 	}

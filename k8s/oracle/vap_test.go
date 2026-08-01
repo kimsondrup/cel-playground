@@ -24,7 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/undistro/cel-playground/oracle"
+	"github.com/undistro/cel-playground/k8s/oracle"
 )
 
 // sanitize strips the server-owned metadata the repo's fixtures carry (they

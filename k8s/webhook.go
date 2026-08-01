@@ -16,6 +16,7 @@ package k8s
 
 import (
 	"encoding/json"
+	"fmt"
 )
 
 // EvalWebhook evaluates the matchConditions of every webhook in a
@@ -30,7 +31,7 @@ import (
 // 'authorizer' and 'authorizer.requestResource'; 'namespaceObject' is declared
 // but left null, because the matcher passes no namespace.
 func EvalWebhook(webhookInput, oldObjectInput, objectValueInput, requestInput, authorizerInput []byte) (string, error) {
-	celInfo, err := extractCelInformation(webhookInput)
+	celInfo, err := extractCelInformation(webhookInput, webhookKinds...)
 	if err != nil {
 		return "", err
 	}
@@ -43,11 +44,15 @@ func EvalWebhook(webhookInput, oldObjectInput, objectValueInput, requestInput, a
 	scope := newMatchConditionScope(inputs)
 
 	sections := evalSections{}
-	for _, webhookMatchConditions := range celInfo.webhookMatchConditions {
+	for i, webhookMatchConditions := range celInfo.webhookMatchConditions {
 		matchConditionsEval := evalResponses{}
 		for _, matchCondition := range webhookMatchConditions {
+			// Two webhooks in one configuration may name a condition the same
+			// thing, and each is matched against its own cost budget, so a row
+			// has to say which webhook it belongs to.
+			name := fmt.Sprintf("webhooks[%d].%s", i, matchCondition.name)
 			matchConditionsEval = append(matchConditionsEval,
-				scope.evalExpression(matchCondition.name, &matchConditionExpression{expression: matchCondition.expression}, declsFor(false)))
+				scope.evalExpression(name, &matchConditionExpression{expression: matchCondition.expression}, declsFor(false)))
 		}
 		sections.webhookMatchConditions = append(sections.webhookMatchConditions, matchConditionsEval)
 	}

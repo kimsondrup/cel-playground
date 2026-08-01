@@ -24,7 +24,7 @@ import (
 	"testing"
 
 	"github.com/undistro/cel-playground/k8s"
-	"github.com/undistro/cel-playground/oracle"
+	"github.com/undistro/cel-playground/k8s/oracle"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"

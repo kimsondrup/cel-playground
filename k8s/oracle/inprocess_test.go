@@ -22,9 +22,8 @@ import (
 	"testing"
 
 	"k8s.io/apiserver/pkg/admission"
-	"k8s.io/apiserver/pkg/cel/environment"
 
-	"github.com/undistro/cel-playground/oracle"
+	"github.com/undistro/cel-playground/k8s/oracle"
 )
 
 // TestInProcessOracle exercises upstream's own validator, reached through
@@ -73,13 +72,11 @@ func TestInProcessOracle(t *testing.T) {
 			req := oracle.InProcessRequest{Object: obj, Operation: admission.Update, OldObject: obj}
 			res, err := oracle.Evaluate(context.Background(), policy, req)
 			if err != nil {
-				// A compile error is a legitimate observation, not a test
-				// failure: report it verbatim.
-				t.Logf("policy %q did not compile:\n%v", policy.Name, err)
-				if tc.wantAction != "compile-error" {
-					t.Logf("(the fixture is expected to be evaluable; recording the compiler's verdict)")
+				if tc.wantAction == "compile-error" {
+					t.Logf("policy %q did not compile, as expected:\n%v", policy.Name, err)
+					return
 				}
-				return
+				t.Fatalf("policy %q did not compile:\n%v", policy.Name, err)
 			}
 
 			t.Logf("ValidateResult for %s x %s:\n%s", tc.policy, tc.object, oracle.FormatResult(res))
@@ -194,13 +191,6 @@ data:
 // TestCompatibilityVersion records the CEL compatibility version this
 // apiserver's own compiler defaults to. See TestCELEnvVersionMatchesApiserver
 // for what actually differs between adjacent versions.
-func TestCompatibilityVersion(t *testing.T) {
-	v := environment.DefaultCompatibilityVersion()
-	t.Logf("k8s.io/apiserver environment.DefaultCompatibilityVersion() = %s", v.String())
-	t.Logf("  (this is what getCompositionEnvTemplateWithStrictCost passes to MustBaseEnvSet,")
-	t.Logf("   i.e. the version a real kube-apiserver of this build compiles policies at)")
-}
-
 func contains(haystack []string, needle string) bool {
 	for _, h := range haystack {
 		if h == needle {

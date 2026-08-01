@@ -16,6 +16,7 @@ package k8s
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -73,13 +74,24 @@ var acceptedVersions = map[string][]string{
 	"MutatingWebhookConfiguration":   {"v1", "v1beta1"},
 }
 
-func extractCelInformation(input []byte) (*CelInformation, error) {
+// policyKind and webhookKinds are what each mode evaluates. A configuration
+// pasted into the policy editor decodes perfectly well and carries nothing the
+// policy evaluator looks at, so without this the panel would come back empty
+// and say nothing.
+const policyKind = "ValidatingAdmissionPolicy"
+
+var webhookKinds = []string{"ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"}
+
+func extractCelInformation(input []byte, wanted ...string) (*CelInformation, error) {
 	typeMeta := metav1.TypeMeta{}
 	if err := decodeTyped(input, &typeMeta, false); err != nil {
 		return nil, fmt.Errorf("failed to decode input: %w", err)
 	}
 	if err := checkAccepted(typeMeta); err != nil {
 		return nil, err
+	}
+	if !slices.Contains(wanted, typeMeta.Kind) {
+		return nil, fmt.Errorf("this mode evaluates %s; %q belongs in the other one", strings.Join(prefixedKinds(wanted), " and "), typeMeta.Kind)
 	}
 
 	switch typeMeta.Kind {
@@ -143,6 +155,14 @@ func checkAccepted(typeMeta metav1.TypeMeta) error {
 		}
 	}
 	return fmt.Errorf("cannot evaluate apiVersion %q for kind %q; expected one of %s", typeMeta.APIVersion, typeMeta.Kind, strings.Join(prefixed(admissionregistrationGroup+"/", versions), ", "))
+}
+
+func prefixedKinds(kinds []string) []string {
+	out := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		out = append(out, "a "+kind)
+	}
+	return out
 }
 
 func unknownKindError(kind string) error {

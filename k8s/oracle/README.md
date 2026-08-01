@@ -41,12 +41,15 @@ go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest \
 ```
 
 Pick the version that matches `k8s.io/apiserver` in the root `go.mod`
-(currently v0.36.2 → envtest 1.36.2). `setup-envtest list` shows what is
-available.
+(currently v0.36.2 → envtest 1.36.2); `AssetsDir` will only use assets of that
+minor, so downloading a newer set alongside them changes nothing. `-p path`
+just prints where they landed — nothing consumes it. `setup-envtest list` shows
+what is available.
 
 ## Running
 
 ```sh
+make test-oracle          # from the repo root
 cd k8s/oracle && go test -tags oracle ./... -v
 ```
 

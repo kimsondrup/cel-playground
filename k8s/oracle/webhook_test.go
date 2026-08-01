@@ -29,7 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/undistro/cel-playground/oracle"
+	"github.com/undistro/cel-playground/k8s/oracle"
 )
 
 // TestWebhookMatchConditions is the ground truth for match-condition
@@ -139,12 +139,12 @@ func TestWebhookMatchConditions(t *testing.T) {
 			}
 
 			// The probe denies only its own labelled ConfigMap.
-			ws.Deny = func(path string, req *admissionv1.AdmissionRequest) string {
+			ws.SetDeny(func(path string, req *admissionv1.AdmissionRequest) string {
 				if path == "/probe" {
 					return "probe-" + probeID + "-active"
 				}
 				return ""
-			}
+			})
 
 			cfg := &admissionregistrationv1.ValidatingWebhookConfiguration{
 				ObjectMeta: metav1.ObjectMeta{Name: cfgName},

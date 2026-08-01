@@ -85,7 +85,7 @@ examples:
       kind:
         group: apps
         version: v1
-        resource: deployments
+        kind: Deployment
       resource:
         group: apps
         version: v1
@@ -93,7 +93,7 @@ examples:
       requestKind:
         group: apps
         version: v1
-        resource: deployments
+        kind: Deployment
       requestResource:
         group: apps
         version: v1
@@ -162,7 +162,7 @@ examples:
       kind:
         group: coordination.k8s.io
         version: v1
-        resource: leases
+        kind: leases
       resource:
         group: coordination.k8s.io
         version: v1
@@ -170,7 +170,7 @@ examples:
       requestKind:
         group: coordination.k8s.io
         version: v1
-        resource: leases
+        kind: leases
       requestResource:
         group: coordination.k8s.io
         version: v1
@@ -265,7 +265,7 @@ examples:
       kind:
         group: apps
         version: v1
-        resource: deployments
+        kind: Deployment
       resource:
         group: apps
         version: v1
@@ -273,7 +273,7 @@ examples:
       requestKind:
         group: apps
         version: v1
-        resource: deployments
+        kind: Deployment
       requestResource:
         group: apps
         version: v1
@@ -367,7 +367,7 @@ examples:
       kind:
         group: apps
         version: v1
-        resource: deployments
+        kind: Deployment
       resource:
         group: apps
         version: v1
@@ -375,7 +375,7 @@ examples:
       requestKind:
         group: apps
         version: v1
-        resource: deployments
+        kind: Deployment
       requestResource:
         group: apps
         version: v1
@@ -476,7 +476,7 @@ examples:
       kind:
         group: apps
         version: v1
-        resource: deployments
+        kind: Deployment
       resource:
         group: apps
         version: v1
@@ -484,7 +484,7 @@ examples:
       requestKind:
         group: apps
         version: v1
-        resource: deployments
+        kind: Deployment
       requestResource:
         group: apps
         version: v1

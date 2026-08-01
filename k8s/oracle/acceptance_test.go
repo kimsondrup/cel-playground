@@ -24,14 +24,17 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apiserver/pkg/cel/environment"
+	apicompatibility "k8s.io/apiserver/pkg/util/compatibility"
 
-	"github.com/undistro/cel-playground/oracle"
+	"github.com/undistro/cel-playground/k8s"
+
+	"github.com/undistro/cel-playground/k8s/oracle"
 )
 
 // TestAcceptanceServedVersions records which admissionregistration.k8s.io
 // versions this apiserver actually serves, and which of them carry
-// ValidatingAdmissionPolicy. The repo's fixtures are written against
-// v1alpha1; whether that is still a thing is not a matter of opinion.
+// ValidatingAdmissionPolicy. Which versions the playground should accept is
+// not a matter of opinion, and this is where the answer comes from.
 func TestAcceptanceServedVersions(t *testing.T) {
 	o := cluster(t)
 
@@ -223,6 +226,17 @@ func TestCELEnvVersionMatchesApiserver(t *testing.T) {
 	def := environment.DefaultCompatibilityVersion()
 	t.Logf("environment.DefaultCompatibilityVersion() = %s", def)
 
+	// The playground compiles at whatever this reports, so it must be the
+	// version the apiserver of this build compiles at: one minor behind the
+	// binary, never the binary's own.
+	build := apicompatibility.DefaultBuildEffectiveVersion().BinaryVersion()
+	if def.Major() != build.Major() || def.Minor() != build.Minor()-1 {
+		t.Errorf("DefaultCompatibilityVersion() = %s, want one minor behind the build version %s", def, build)
+	}
+	if got := k8s.PlaygroundEnvVersion(); got != def.String() {
+		t.Errorf("the playground reports it compiles at %s, the apiserver compiles at %s", got, def)
+	}
+
 	names := func(v *version.Version) map[string]bool {
 		envSet := environment.MustBaseEnvSet(v)
 		env, err := envSet.Env(environment.StoredExpressions)
@@ -264,6 +278,70 @@ func TestCELEnvVersionMatchesApiserver(t *testing.T) {
 		}
 		if len(removed) > 0 {
 			t.Logf("  removed: %s", strings.Join(removed, ", "))
+		}
+	}
+}
+
+// The playground compiles expressions as environment.NewExpressions, and the
+// footer tells the user which Kubernetes CEL environment that is. Upstream also
+// keeps a StoredExpressions environment, which offers more. While the two agree
+// the distinction is invisible; when they stop agreeing, this is where we find
+// out, because at that point the choice starts to matter to a user.
+func TestNewAndStoredExpressionEnvironmentsStillAgree(t *testing.T) {
+	envSet := environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion())
+	names := func(mode environment.Type) map[string]bool {
+		env, err := envSet.Env(mode)
+		if err != nil {
+			t.Fatalf("building the %v env: %v", mode, err)
+		}
+		out := map[string]bool{}
+		for name := range env.Functions() {
+			out[name] = true
+		}
+		for _, declared := range env.Variables() {
+			out["var:"+declared.Name()] = true
+		}
+		return out
+	}
+	stored, fresh := names(environment.StoredExpressions), names(environment.NewExpressions)
+	var only []string
+	for name := range stored {
+		if !fresh[name] {
+			only = append(only, name)
+		}
+	}
+	sort.Strings(only)
+	if len(only) > 0 {
+		t.Logf("StoredExpressions offers %d names NewExpressions does not: %s", len(only), strings.Join(only, ", "))
+		t.Log("The playground compiles as NewExpressions, so these are now unavailable there.")
+		t.Log("Decide deliberately whether that is still right, and say so in the README.")
+		t.Fail()
+	}
+}
+
+// Whatever apiVersions this apiserver serves for a ValidatingAdmissionPolicy,
+// the playground must accept a policy written against them -- otherwise it
+// rejects something a user can really create.
+func TestThePlaygroundAcceptsEveryServedVersion(t *testing.T) {
+	o := cluster(t)
+	resources, err := o.Discovery.ServerResourcesForGroupVersion("admissionregistration.k8s.io/v1")
+	if err != nil {
+		t.Fatalf("discovering admissionregistration.k8s.io/v1: %v", err)
+	}
+	served := false
+	for _, r := range resources.APIResources {
+		if r.Kind == "ValidatingAdmissionPolicy" {
+			served = true
+		}
+	}
+	if !served {
+		t.Fatalf("this apiserver does not serve ValidatingAdmissionPolicy in v1")
+	}
+	for _, version := range []string{"v1", "v1beta1", "v1alpha1"} {
+		policy := "apiVersion: admissionregistration.k8s.io/" + version + "\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: p\nspec:\n  validations:\n    - expression: \"true\"\n"
+		_, err := k8s.EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte("apiVersion: v1\nkind: ConfigMap\n"), nil, nil, nil)
+		if err != nil {
+			t.Errorf("the playground rejects %s: %v", version, err)
 		}
 	}
 }

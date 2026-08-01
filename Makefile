@@ -24,6 +24,10 @@ fmt: ## Run go fmt against code.
 test: fmt ## Run tests.
 	go test ./... -coverprofile cover.out
 
+.PHONY: test-oracle
+test-oracle: ## Run the differential oracle against upstream, and against a real apiserver when envtest assets are installed.
+	cd k8s/oracle && go test -tags oracle ./...
+
 .PHONY: serve
 serve: ## Serve static files.
 	python3 -m http.server -d web/ 8080

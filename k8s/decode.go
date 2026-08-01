@@ -32,16 +32,25 @@ import (
 // encoding/json, which matches struct fields case-insensitively, so a policy
 // that said `Validations:` would evaluate here and be ignored by a cluster.
 //
-// strict additionally rejects unknown fields and duplicate keys. Use it where
-// the input is the playground's own answer sheet rather than the object under
-// test: a typo there produces a wrong answer with no other symptom.
+// strict additionally rejects unknown fields and duplicate keys. Use it for
+// every closed Kubernetes type the playground reads -- the RBAC tab, the
+// request, the namespace -- because a field dropped there produces a wrong
+// answer with no other symptom. The object and oldObject tabs stay lenient:
+// they are arbitrary resources the playground has no schema for.
 func decodeTyped(input []byte, into any, strict bool) error {
-	jsonBytes, err := sigsyaml.YAMLToJSON(input)
+	if !strict {
+		jsonBytes, err := sigsyaml.YAMLToJSON(input)
+		if err != nil {
+			return err
+		}
+		return kjson.UnmarshalCaseSensitivePreserveInts(jsonBytes, into)
+	}
+	// YAMLToJSONStrict is what rejects a duplicate key: YAML is parsed into a
+	// map before it ever becomes JSON, so a repeated field would otherwise have
+	// overwritten its earlier self long before the JSON decoder could object.
+	jsonBytes, err := sigsyaml.YAMLToJSONStrict(input)
 	if err != nil {
 		return err
-	}
-	if !strict {
-		return kjson.UnmarshalCaseSensitivePreserveInts(jsonBytes, into)
 	}
 	strictErrs, err := kjson.UnmarshalStrict(jsonBytes, into)
 	if err != nil {

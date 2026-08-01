@@ -97,7 +97,7 @@ func decodeNamespaceInput(input []byte) (*corev1.Namespace, error) {
 		return nil, nil
 	}
 	namespace := &corev1.Namespace{}
-	if err := decodeTyped(input, namespace, false); err != nil {
+	if err := decodeTyped(input, namespace, true); err != nil {
 		return nil, err
 	}
 	return namespace, nil
@@ -108,12 +108,17 @@ func decodeNamespaceInput(input []byte) (*corev1.Namespace, error) {
 // nothing for celplugin.CreateAdmissionRequest to derive -- that helper exists
 // to build a request out of admission.Attributes, which the playground does not
 // have.
+//
+// It is read strictly. AdmissionRequest and Namespace are closed types, and a
+// field the playground silently drops is a field the user believes they set:
+// `Username:` for `username:` would leave the request anonymous and every
+// authorizer check unanswered, with nothing on screen to say why.
 func decodeRequestInput(input []byte) (*admissionv1.AdmissionRequest, error) {
 	request := &admissionv1.AdmissionRequest{}
 	if len(strings.TrimSpace(string(input))) == 0 {
 		return request, nil
 	}
-	if err := decodeTyped(input, request, false); err != nil {
+	if err := decodeTyped(input, request, true); err != nil {
 		return nil, err
 	}
 	return request, nil

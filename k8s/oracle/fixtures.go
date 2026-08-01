@@ -42,12 +42,11 @@ func WebhookFixture(name string) string { return filepath.Join(RepoTestdata, "we
 
 // LoadPolicy reads a ValidatingAdmissionPolicy from a YAML file.
 //
-// The repo's fixtures are written against admissionregistration.k8s.io/v1alpha1,
-// a version this apiserver no longer serves (see TestAcceptanceServedVersions).
-// Decoding into the v1 Go struct and rewriting the apiVersion is safe because
-// the three versions are structurally identical for every field the playground
-// exercises; doing so is what lets the same fixture drive both the in-process
-// oracle and a real cluster.
+// Whatever apiVersion the document declares, it is decoded into the v1 Go
+// struct and the apiVersion rewritten to the one this apiserver serves (see
+// TestAcceptanceServedVersions). The three versions are structurally identical
+// for every field the playground exercises, and doing this is what lets one
+// fixture drive both the in-process oracle and a real cluster.
 func LoadPolicy(path string) (*admissionregistrationv1.ValidatingAdmissionPolicy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

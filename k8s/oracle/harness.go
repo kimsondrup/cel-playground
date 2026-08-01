@@ -33,8 +33,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
+	"k8s.io/apiserver/pkg/cel/environment"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
@@ -53,8 +55,8 @@ const DefaultAssetsRoot = ".local/share/kubebuilder-envtest"
 // the reason it could not be found. Exactly one of the two is non-empty.
 //
 // KUBEBUILDER_ASSETS wins if set (that is what `setup-envtest use -p env`
-// exports). Otherwise the newest versioned directory under
-// ~/.local/share/kubebuilder-envtest/k8s is used.
+// exports). Otherwise the assets under ~/.local/share/kubebuilder-envtest/k8s
+// whose minor matches the apiserver this module is built against are used.
 func AssetsDir() (dir string, skipReason string) {
 	if env := os.Getenv("KUBEBUILDER_ASSETS"); env != "" {
 		if err := checkAssets(env); err != nil {
@@ -72,17 +74,22 @@ func AssetsDir() (dir string, skipReason string) {
 	if err != nil {
 		return "", fmt.Sprintf("no envtest assets: %v (run the setup-envtest command in the oracle README)", err)
 	}
+	// The apiserver has to be the one the module compiles against, or the
+	// oracle answers questions about a different Kubernetes than the playground
+	// claims to model. Newest-wins would silently do that the moment somebody
+	// downloads the next release's assets alongside these.
+	want := environment.DefaultCompatibilityVersion()
+	prefix := fmt.Sprintf("%d.%d.", want.Major(), want.Minor()+1)
 	var candidates []string
 	for _, e := range entries {
-		if e.IsDir() {
+		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
 			candidates = append(candidates, e.Name())
 		}
 	}
 	if len(candidates) == 0 {
-		return "", fmt.Sprintf("no envtest assets under %s (run the setup-envtest command in the oracle README)", root)
+		return "", fmt.Sprintf("no %s* envtest assets under %s (run the setup-envtest command in the oracle README)", prefix, root)
 	}
 	sort.Strings(candidates)
-	// Highest version last; sort.Strings is good enough for 1.3x-linux-amd64.
 	dir = filepath.Join(root, candidates[len(candidates)-1])
 	if err := checkAssets(dir); err != nil {
 		return "", fmt.Sprintf("envtest assets at %s are incomplete: %v", dir, err)

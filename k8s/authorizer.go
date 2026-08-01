@@ -20,9 +20,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"reflect"
+	"sort"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	rbacregistry "k8s.io/kubernetes/pkg/registry/rbac/validation"
@@ -90,7 +93,68 @@ func NewRBACAuthorizer(input []byte) (authorizer.Authorizer, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := rules.aggregate(); err != nil {
+		return nil, err
+	}
 	return rbacauthorizer.New(rules, rules, rules, rules), nil
+}
+
+// aggregate fills in the rules of every ClusterRole that declares an
+// aggregationRule, the way kube-controller-manager's ClusterRoleAggregation
+// controller fills them in on a cluster: each selector picks ClusterRoles by
+// label, their rules are concatenated in name order, and duplicates are
+// dropped. The authorizer itself only ever reads `rules`, so without this an
+// aggregated ClusterRole would grant nothing here and everything it aggregates
+// on a cluster.
+func (r *rbacRules) aggregate() error {
+	names := make([]string, 0, len(r.clusterRoles))
+	for name := range r.clusterRoles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		clusterRole := r.clusterRoles[name]
+		if clusterRole.AggregationRule == nil {
+			continue
+		}
+		aggregated := []rbacv1.PolicyRule{}
+		for i := range clusterRole.AggregationRule.ClusterRoleSelectors {
+			selector, err := metav1.LabelSelectorAsSelector(&clusterRole.AggregationRule.ClusterRoleSelectors[i])
+			if err != nil {
+				return fmt.Errorf("ClusterRole %q has an unusable aggregationRule: %w", name, err)
+			}
+			for _, candidate := range names {
+				if candidate == name {
+					continue
+				}
+				source := r.clusterRoles[candidate]
+				if !selector.Matches(labels.Set(source.Labels)) {
+					continue
+				}
+				for _, rule := range source.Rules {
+					if !containsRule(aggregated, rule) {
+						aggregated = append(aggregated, rule)
+					}
+				}
+			}
+		}
+		clusterRole.Rules = aggregated
+	}
+	return nil
+}
+
+// containsRule deduplicates the aggregated rules. A PolicyRule is five string
+// slices, so reflect suffices; the one case it treats differently from the
+// controller's semantic equality is a nil slice against an empty one, where the
+// worst outcome is that a duplicate rule survives, and RBAC is additive.
+func containsRule(rules []rbacv1.PolicyRule, rule rbacv1.PolicyRule) bool {
+	for i := range rules {
+		if reflect.DeepEqual(rules[i], rule) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeRBACInput(input []byte) (*rbacRules, error) {

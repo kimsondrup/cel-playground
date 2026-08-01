@@ -25,8 +25,8 @@ import (
 
 // The examples are what someone sees before they type anything, so a broken one
 // is the first thing they learn. This runs every shipped example through the
-// evaluator and insists it produces a result rather than an error, and that
-// every expression in it evaluated.
+// evaluator and insists that nothing it evaluated reported an error and that
+// nothing ran past a cost budget.
 //
 // It reads the YAML sources rather than the generated web/assets/examples/*.json,
 // so an example that was edited without running `make update-data` is still

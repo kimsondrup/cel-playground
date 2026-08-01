@@ -35,6 +35,12 @@ import (
 // -- so a CEL library that shipped in the current minor is not usable until the
 // next release. Both upstream compile paths the playground mirrors
 // (plugin/policy/validating and plugin/webhook/generic) pass exactly this.
+//
+// Expressions are compiled as environment.NewExpressions, which is the gate an
+// author hits: it withholds anything behind a disabled feature gate, where
+// StoredExpressions offers it so that an expression already stored on a cluster
+// keeps working. Compiling as StoredExpressions would let the playground accept
+// what the version in the footer says it will not.
 func baseEnvSet() *environment.EnvSet {
 	return environment.MustBaseEnvSet(environment.DefaultCompatibilityVersion())
 }
@@ -221,7 +227,7 @@ func newPolicyCompiler(celInfo *CelInformation) (*policyCompiler, error) {
 	}
 	for _, variable := range celInfo.variables {
 		accessor := &variableExpression{name: variable.name, expression: variable.expression}
-		p.compiledVariables[variable.name] = compiler.CompileAndStoreVariable(accessor, declsFor(celInfo.hasParams), environment.StoredExpressions)
+		p.compiledVariables[variable.name] = compiler.CompileAndStoreVariable(accessor, declsFor(celInfo.hasParams), environment.NewExpressions)
 		p.variableNames = append(p.variableNames, variable.name)
 	}
 	return p, nil
@@ -325,7 +331,7 @@ func (s *evalScope) variableCallback(name string) lazy.GetFieldFunc {
 // A compilation failure is reported as a result rather than returned as a Go
 // error: a mistyped expression is the answer the playground exists to give.
 func (s *evalScope) evalExpression(name string, accessor celplugin.ExpressionAccessor, decls celplugin.OptionalVariableDeclarations) *evalResponse {
-	result := s.compiler.CompileCELExpression(accessor, decls, environment.StoredExpressions)
+	result := s.compiler.CompileCELExpression(accessor, decls, environment.NewExpressions)
 	if result.Error != nil {
 		return newEvalResponseCompilationErr(name, result.Error)
 	}
@@ -336,9 +342,8 @@ func (s *evalScope) evalExpression(name string, accessor celplugin.ExpressionAcc
 	return newEvalResponse(name, val, details, "", nil)
 }
 
-// newEvalResponseCompilationErr reports a type-check or compilation failure --
-// the class of mistake the playground previously could not see at all, because
-// env.Parse only ever caught syntax errors. There is no cost: nothing ran.
+// newEvalResponseCompilationErr reports a type-check or compilation failure.
+// There is no cost: nothing ran.
 //
 // The failure is wrapped as an evalResponseError so that an expression which
 // dereferences a variable that failed to compile reports the variable's

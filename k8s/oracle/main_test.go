@@ -22,7 +22,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/undistro/cel-playground/oracle"
+	"github.com/undistro/cel-playground/k8s/oracle"
 )
 
 // One control plane is shared by every test in the package: starting etcd and

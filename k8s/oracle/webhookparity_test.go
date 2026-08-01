@@ -43,7 +43,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/undistro/cel-playground/k8s"
-	"github.com/undistro/cel-playground/oracle"
+	"github.com/undistro/cel-playground/k8s/oracle"
 )
 
 // webhookParityCase is one row of the playground's own webhook test table

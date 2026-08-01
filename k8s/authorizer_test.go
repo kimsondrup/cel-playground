@@ -234,3 +234,81 @@ roleRef:
 		})
 	}
 }
+
+// An aggregated ClusterRole carries no rules of its own; a controller fills
+// them in from the ClusterRoles its selectors match. Without reproducing that,
+// an aggregated role would grant nothing here and everything it aggregates on
+// a cluster -- a silent wrong answer, which is the failure this tab exists to
+// avoid.
+func TestAggregatedClusterRolesAreResolved(t *testing.T) {
+	const rules = `
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.example.com/aggregate-to-monitoring: "true"
+rules: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring-pods
+  labels:
+    rbac.example.com/aggregate-to-monitoring: "true"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: not-aggregated
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alice-monitoring
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: alice
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: monitoring
+`
+	authz, err := NewRBACAuthorizer([]byte(rules))
+	if err != nil {
+		t.Fatalf("NewRBACAuthorizer() error: %v", err)
+	}
+	alice := &user.DefaultInfo{Name: "alice"}
+
+	decision, reason, err := authz.Authorize(context.Background(), authorizer.AttributesRecord{
+		User: alice, Verb: "list", Resource: "pods", ResourceRequest: true,
+	})
+	if err != nil {
+		t.Fatalf("Authorize() error: %v", err)
+	}
+	if decision != authorizer.DecisionAllow {
+		t.Errorf("Authorize(list pods) = %v (%s), want Allow through the aggregated ClusterRole", decision, reason)
+	}
+
+	// A ClusterRole the selectors do not match contributes nothing.
+	decision, _, err = authz.Authorize(context.Background(), authorizer.AttributesRecord{
+		User: alice, Verb: "get", Resource: "secrets", ResourceRequest: true,
+	})
+	if err != nil {
+		t.Fatalf("Authorize() error: %v", err)
+	}
+	if decision != authorizer.DecisionNoOpinion {
+		t.Errorf("Authorize(get secrets) = %v, want NoOpinion: that ClusterRole carries no aggregation label", decision)
+	}
+}

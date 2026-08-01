@@ -63,10 +63,17 @@ type WebhookServer struct {
 
 	mu    sync.Mutex
 	calls []WebhookCall
+	// deny is consulted for every request; returning a non-empty string denies
+	// with that message. It is guarded because the apiserver may still have a
+	// request in flight when a test moves on and sets the next one.
+	deny func(path string, req *admissionv1.AdmissionRequest) string
+}
 
-	// Deny is consulted for every request; returning a non-empty string denies
-	// with that message.
-	Deny func(path string, req *admissionv1.AdmissionRequest) string
+// SetDeny installs the decision the handler returns for subsequent requests.
+func (ws *WebhookServer) SetDeny(deny func(path string, req *admissionv1.AdmissionRequest) string) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.deny = deny
 }
 
 // StartWebhookServer brings up a TLS listener on 127.0.0.1 with a freshly
@@ -181,9 +188,13 @@ func (ws *WebhookServer) handle(w http.ResponseWriter, r *http.Request) {
 	ws.calls = append(ws.calls, call)
 	ws.mu.Unlock()
 
+	ws.mu.Lock()
+	deny := ws.deny
+	ws.mu.Unlock()
+
 	resp := admissionv1.AdmissionResponse{UID: req.UID, Allowed: true}
-	if ws.Deny != nil {
-		if msg := ws.Deny(r.URL.Path, req); msg != "" {
+	if deny != nil {
+		if msg := deny(r.URL.Path, req); msg != "" {
 			resp.Allowed = false
 			resp.Result = &metav1.Status{Message: msg, Code: http.StatusForbidden, Reason: metav1.StatusReasonForbidden}
 		}
