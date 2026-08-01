@@ -1,14 +1,15 @@
 # k8s/oracle — differential-testing oracle
 
 Answers "what would a real cluster actually do with this policy and this object?"
-so the playground's vap and webhook modes can be checked against ground truth
-rather than against our reading of the apiserver source.
+so the playground's vap, map and webhook modes can be checked against ground
+truth rather than against our reading of the apiserver source.
 
 There are two oracles here, and the cheap one is the one you want.
 
-**In-process oracle** (`inprocess.go`) reproduces upstream's unexported
-`validating.compilePolicy` out of exported API, then calls upstream's own
-`validating.Validator`. No etcd, no apiserver, no network — but the exact
+**In-process oracle** (`inprocess.go`, `mapinprocess.go`) reproduces upstream's
+unexported `validating.compilePolicy` and `mutating.compilePolicy` out of
+exported API, then calls upstream's own `validating.Validator` and
+`patch.Patcher`. No etcd, no apiserver, no network — but the exact
 evaluation code path a cluster takes once a policy is admitted and matched. It
 runs in milliseconds and it is the only way to get **exact CEL costs**, which
 a real apiserver never reports.
@@ -67,7 +68,35 @@ go test -tags oracle -run TestWebhook         ./... -v   # real webhook invocati
 go test -tags oracle -run TestCost            ./... -v   # cost budget behaviour, ~25s
 go test -tags oracle -run TestPlaygroundVsUpstream ./... -v  # the differential test
 go test -tags oracle -run TestWebhookParityWithUpstream ./... -v  # webhook matchConditions vs a cluster
+go test -tags oracle -run TestMAPPlaygroundMatchesUpstream ./... -v  # the map corpus vs upstream's patchers
+go test -tags oracle -run TestMAPPlaygroundMatchesCluster  ./... -v  # the map corpus vs a real apiserver
 ```
+
+## The mutating mode
+
+`TestMAPPlaygroundMatchesUpstream` runs every `k8s/testdata/map` fixture through
+`k8s.EvalMutatingAdmissionPolicy` and through upstream's own patchers, and
+compares the object each produced and what each mutation was charged. The two
+reproduce `mutating.compilePolicy` independently and take their merge schema
+from different places -- the binary embeds a copy, the oracle reads client-go's
+live one -- so agreeing on every fixture is what says the copy is faithful.
+
+`TestMAPPlaygroundMatchesCluster` submits five of them to a real apiserver as a
+dry-run CREATE, twice: once with the policy bound and once without. The paths
+where the two answers differ are the policy's doing and nothing else's. The
+cluster also defaults the object, which the playground does not, so its answer
+has to be *contained in* the cluster's rather than equal to it -- with lists
+held to the same length and order, which is what makes a keyed list merged
+wrongly a failure rather than a subset.
+
+`TestBuiltinSchemaIsCurrent` generates the two files the wasm binary embeds:
+
+```sh
+go test -tags oracle -run TestBuiltinSchemaIsCurrent ./... -update-builtins
+```
+
+It fails when client-go's generated merge schema moves, which is the only thing
+standing between the embedded copy and silent rot.
 
 `TestWebhookParityWithUpstream` is the webhook half of the differential test. It
 drives the repo's own `k8s/testdata/webhook` fixtures through `k8s.EvalWebhook`,
