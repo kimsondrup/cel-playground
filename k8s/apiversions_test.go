@@ -42,6 +42,8 @@ func TestAcceptedVersionsAreShapedLikeV1(t *testing.T) {
 	}{
 		{"v1alpha1", v1alpha1.ValidatingAdmissionPolicy{}, admissionregistrationv1.ValidatingAdmissionPolicy{}},
 		{"v1beta1", v1beta1.ValidatingAdmissionPolicy{}, admissionregistrationv1.ValidatingAdmissionPolicy{}},
+		{"v1alpha1", v1alpha1.MutatingAdmissionPolicy{}, admissionregistrationv1.MutatingAdmissionPolicy{}},
+		{"v1beta1", v1beta1.MutatingAdmissionPolicy{}, admissionregistrationv1.MutatingAdmissionPolicy{}},
 		{"v1beta1", v1beta1.ValidatingWebhookConfiguration{}, admissionregistrationv1.ValidatingWebhookConfiguration{}},
 		{"v1beta1", v1beta1.MutatingWebhookConfiguration{}, admissionregistrationv1.MutatingWebhookConfiguration{}},
 	}

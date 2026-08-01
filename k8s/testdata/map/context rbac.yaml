@@ -1,0 +1,24 @@
+# The mutation asks
+#   authorizer.group("apps").resource("deployments").check("update").allowed()
+# and RBAC answers it from this grant, for the user the Request tab names.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deployment-updater
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: testuser-deployment-updater
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: testuser
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: deployment-updater

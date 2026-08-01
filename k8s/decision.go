@@ -61,6 +61,52 @@ func (s *evalSections) policyDecision(celInfo *CelInformation) []*EvalResult {
 	return result(true, "admitted: every validation passed")
 }
 
+// mutationDecision reports what a cluster would do with the request given what
+// the policy's matchConditions and mutations did.
+//
+// A failed mutation is a rejection, not a warning: the dispatcher collects the
+// error and the request is denied unless failurePolicy is Ignore. The
+// playground has nothing to reject, so it applies what it can and says here
+// that a cluster would not have.
+func (s *evalSections) mutationDecision(celInfo *CelInformation) []*EvalResult {
+	name := "admission"
+	result := func(admitted bool, message string) []*EvalResult {
+		return []*EvalResult{{Name: &name, Result: admitted, Message: message, IsError: !admitted}}
+	}
+	rejects := celInfo.failurePolicy == admissionregistrationv1.Fail
+
+	for i, condition := range s.matchConditions {
+		matchCondition := celInfo.matchConditions[i]
+		if condition.isError() {
+			if rejects {
+				return result(false, fmt.Sprintf("rejected: matchCondition %q failed and failurePolicy is Fail", matchCondition.name))
+			}
+			return result(true, fmt.Sprintf("admitted: matchCondition %q failed and failurePolicy is Ignore, so the policy is skipped", matchCondition.name))
+		}
+		if condition.val == nil || condition.val.Value() != true {
+			return result(true, fmt.Sprintf("admitted: matchCondition %q is false, so the policy does not apply to this request", matchCondition.name))
+		}
+	}
+
+	for i, mutation := range s.mutations {
+		if !mutation.IsError {
+			continue
+		}
+		if rejects {
+			return result(false, fmt.Sprintf("rejected: mutations[%d] failed and failurePolicy is Fail, so the request is denied and nothing is applied", i))
+		}
+		return result(true, fmt.Sprintf("admitted: mutations[%d] failed but failurePolicy is Ignore, so it is skipped", i))
+	}
+
+	switch {
+	case len(celInfo.mutations) == 0:
+		return result(true, "admitted: the policy has no mutations")
+	case s.diff == "":
+		return result(true, "admitted: every mutation ran and left the object unchanged")
+	}
+	return result(true, "admitted: every mutation ran, and the object is mutated")
+}
+
 // webhookDecisions reports, per webhook, whether the apiserver would call it.
 // A webhook is skipped, not failed, when a matchCondition is false; an
 // erroring one is decided by that webhook's own failurePolicy.

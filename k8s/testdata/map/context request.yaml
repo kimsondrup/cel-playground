@@ -1,0 +1,26 @@
+kind:
+  group: "apps"
+  version: "v1"
+  kind: "Deployment"
+resource:
+  group: "apps"
+  version: "v1"
+  resource: "deployments"
+subResource: ""
+requestKind:
+  group: "apps"
+  version: "v1"
+  kind: "Deployment"
+requestResource:
+  group: "apps"
+  version: "v1"
+  resource: "deployments"
+requestSubResource: ""
+name: "nginx"
+namespace: "default"
+operation: "UPDATE"
+userInfo:
+  username: "testuser"
+  uid: "123456789"
+  groups:
+  - "system:authenticated"

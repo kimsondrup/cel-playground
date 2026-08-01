@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	celgo "github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -270,12 +271,19 @@ func (p *policyCompiler) newScope(inputs *evalInputs, bindings scopeBindings) *e
 		compiledVariables: p.compiledVariables,
 		variableResults:   evalResults{},
 	}
-	lazyMap := lazy.NewMapValue(apiservercel.NewObjectType(variablesTypeName, map[string]*apiservercel.DeclField{}))
-	for _, name := range p.variableNames {
-		lazyMap.Append(name, s.variableCallback(name))
-	}
-	s.activation.variables = lazyMap
+	s.activation.variables = s.lazyVariables(s.activation, nil)
 	return s
+}
+
+// lazyVariables is the `variables` map one batch binds: each entry is evaluated
+// on first dereference against activation, its value and cost recorded on the
+// scope, and its cost reported to charge if there is one.
+func (s *evalScope) lazyVariables(activation any, charge func(uint64)) ref.Val {
+	lazyMap := lazy.NewMapValue(apiservercel.NewObjectType(variablesTypeName, map[string]*apiservercel.DeclField{}))
+	for _, name := range s.variableNames {
+		lazyMap.Append(name, s.variableCallback(name, activation, charge))
+	}
+	return lazyMap
 }
 
 // newMatchConditionScope compiles matchConditions, for a policy as well as for
@@ -300,18 +308,71 @@ func newMatchConditionScope(inputs *evalInputs) *evalScope {
 	}
 }
 
-func (s *evalScope) variableCallback(name string) lazy.GetFieldFunc {
+// mutationScope carries the playground's `variables` map into an upstream
+// evaluation.
+//
+// A mutation is evaluated by upstream's MutatingEvaluator, which builds the
+// activation itself out of the admission attributes and then asks the
+// CompositionContext on the context for `variables`. Being that context is what
+// lets the panel report the value and the cost of every variable the mutation
+// dereferenced, without the playground evaluating anything a second time.
+//
+// One scope per mutation, because upstream builds a fresh map per ForInput: a
+// variable two mutations read is evaluated, and charged, twice on a cluster.
+type mutationScope struct {
+	context.Context
+	scope *evalScope
+	// accumulated is what the variables cost since the evaluator last read it.
+	// The evaluator subtracts it from the request's budget, so a variable is
+	// charged exactly once per batch even though its value is memoised.
+	accumulated int64
+}
+
+var _ celplugin.CompositionContext = &mutationScope{}
+
+func (p *policyCompiler) newMutationScope() *mutationScope {
+	return &mutationScope{
+		Context: context.Background(),
+		scope: &evalScope{
+			ctx:               context.Background(),
+			variableNames:     p.variableNames,
+			compiledVariables: p.compiledVariables,
+			variableResults:   evalResults{},
+		},
+	}
+}
+
+func (m *mutationScope) Variables(activation any) ref.Val {
+	return m.scope.lazyVariables(activation, func(cost uint64) {
+		if cost > math.MaxInt64 {
+			m.accumulated = math.MaxInt64
+			return
+		}
+		m.accumulated += int64(cost)
+	})
+}
+
+func (m *mutationScope) GetAndResetCost() int64 {
+	cost := m.accumulated
+	m.accumulated = 0
+	return cost
+}
+
+func (s *evalScope) variableCallback(name string, activation any, charge func(uint64)) lazy.GetFieldFunc {
 	return func(_ *lazy.MapValue) ref.Val {
 		result := s.compiledVariables[name]
 		var response *evalResponse
 		if result.Error != nil {
 			response = newEvalResponseCompilationErr(name, result.Error)
-		} else if val, details, err := result.Program.ContextEval(s.ctx, s.activation); err != nil {
+		} else if val, details, err := result.Program.ContextEval(s.ctx, activation); err != nil {
 			response = newEvalResponseErr(name, "evaluating", name, err, details)
 		} else {
 			response = newEvalResponse(name, val, details, "", nil)
 		}
 		s.variableResults[name] = response
+		if charge != nil && response.cost != nil {
+			charge(*response.cost)
+		}
 		return response.val
 	}
 }

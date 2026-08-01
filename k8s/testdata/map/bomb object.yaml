@@ -1,0 +1,18 @@
+# A custom resource: the playground has no merge schema for one, so nothing
+# reads the patched object back and rejects it. What stops the copies below is
+# the size ceiling and nothing else.
+apiVersion: example.com/v1
+kind: Widget
+metadata:
+  name: my-widget
+  namespace: default
+spec:
+  parts:
+  - name: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    size: 1
+  - name: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    size: 2
+  - name: cccccccccccccccccccccccccccccccccccccccc
+    size: 3
+  - name: dddddddddddddddddddddddddddddddddddddddd
+    size: 4

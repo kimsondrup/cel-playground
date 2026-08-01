@@ -119,10 +119,24 @@ type EvalResult struct {
 	Message any     `json:"message,omitempty"`
 }
 
+// EvalMutationResult is one entry of a MutatingAdmissionPolicy's
+// spec.mutations. MutatedObject is the object as it stands after this mutation,
+// so a chain of them can be read step by step; Cost is what the expression
+// itself cost, with the variables it read listed separately.
+type EvalMutationResult struct {
+	PatchType     string  `json:"patchType,omitempty"`
+	MutatedObject string  `json:"mutatedObject,omitempty"`
+	Cost          *uint64 `json:"cost,omitempty"`
+	Error         *string `json:"error,omitempty"`
+	IsError       bool    `json:"isError,omitempty"`
+}
+
 // EvalResponse is the whole result panel. Each variable list belongs to one of
 // the batches the apiserver evaluates a policy in; a variable read from two
 // batches appears in two lists because a cluster evaluates, and charges for, it
 // twice.
+//
+// The field order is the order the panel renders in.
 type EvalResponse struct {
 	// Decision is what a cluster would do with the request: whether the policy
 	// applies, and whether it admits. It comes first because it is the question
@@ -130,16 +144,30 @@ type EvalResponse struct {
 	Decision []*EvalResult `json:"decision,omitempty"`
 	// ExceededBudgets names the cost budgets this evaluation ran past, and is
 	// absent when it ran past none.
-	ExceededBudgets            []*EvalResult   `json:"exceededBudgets,omitempty"`
-	MatchConditions            []*EvalResult   `json:"matchConditions,omitempty"`
-	ValidationVariables        []*EvalVariable `json:"validationVariables,omitempty"`
-	Validations                []*EvalResult   `json:"validations,omitempty"`
-	MessageExpressionVariables []*EvalVariable `json:"messageExpressionVariables,omitempty"`
-	MessageExpressions         []*EvalResult   `json:"messageExpressions,omitempty"`
-	AuditAnnotationVariables   []*EvalVariable `json:"auditAnnotationVariables,omitempty"`
-	AuditAnnotations           []*EvalResult   `json:"auditAnnotations,omitempty"`
-	WebhookMatchConditions     [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
-	Cost                       *uint64         `json:"cost,omitempty"`
+	ExceededBudgets []*EvalResult `json:"exceededBudgets,omitempty"`
+	// Warnings are the ways this result may differ from a cluster's. They sit
+	// above the results they qualify.
+	Warnings                   []string              `json:"warnings,omitempty"`
+	MatchConditions            []*EvalResult         `json:"matchConditions,omitempty"`
+	ValidationVariables        []*EvalVariable       `json:"validationVariables,omitempty"`
+	Validations                []*EvalResult         `json:"validations,omitempty"`
+	MessageExpressionVariables []*EvalVariable       `json:"messageExpressionVariables,omitempty"`
+	MessageExpressions         []*EvalResult         `json:"messageExpressions,omitempty"`
+	AuditAnnotationVariables   []*EvalVariable       `json:"auditAnnotationVariables,omitempty"`
+	AuditAnnotations           []*EvalResult         `json:"auditAnnotations,omitempty"`
+	MutationVariables          []*EvalVariable       `json:"mutationVariables,omitempty"`
+	Mutations                  []*EvalMutationResult `json:"mutations,omitempty"`
+	// Diff is the short answer to what the policy did; FinalObject is the long
+	// one.
+	Diff        string `json:"diff,omitempty"`
+	FinalObject string `json:"finalObject,omitempty"`
+	// NotSimulated lists what this mode parsed and did not act on. It is a
+	// standing property of the mode rather than of the run, which is why it is
+	// not a warning: the warnings above all say "this result may be wrong", and
+	// one that fires every time stops being read.
+	NotSimulated           string          `json:"notSimulated,omitempty"`
+	WebhookMatchConditions [][]*EvalResult `json:"webhookMatchConditions,omitempty"`
+	Cost                   *uint64         `json:"cost,omitempty"`
 }
 
 func getResults(val ref.Val) (any, *string) {
@@ -276,6 +304,16 @@ type evalSections struct {
 
 	webhookMatchConditions []evalResponses
 
+	// One scope per mutation, in spec.mutations order, alongside the result of
+	// applying it. A mutation that never ran has a nil scope.
+	mutationScopes []*evalScope
+	mutations      []*EvalMutationResult
+
+	diff         string
+	finalObject  string
+	notSimulated string
+	warnings     []string
+
 	// decision is the admission outcome the results add up to.
 	decision []*EvalResult
 }
@@ -294,6 +332,42 @@ func (s *evalSections) chainCosts() (matchConditions, validations, auditAnnotati
 	auditAnnotations = calculateVariablesCost(s.auditAnnotationScope) +
 		calculateEvalResponsesCost(s.auditAnnotations)
 	return matchConditions, validations, auditAnnotations
+}
+
+// mutationCost is what one mutation was charged: its own expression plus every
+// variable that mutation dereferenced. Each is checked against a whole budget
+// of its own, which is what the dispatcher hands to every Patch call.
+func (s *evalSections) mutationCost(i int) uint64 {
+	var cost uint64
+	if i < len(s.mutations) && s.mutations[i] != nil && s.mutations[i].Cost != nil {
+		cost = *s.mutations[i].Cost
+	}
+	if i < len(s.mutationScopes) {
+		cost += calculateVariablesCost(s.mutationScopes[i])
+	}
+	return cost
+}
+
+func (s *evalSections) mutationsCost() uint64 {
+	var cost uint64
+	for i := range max(len(s.mutations), len(s.mutationScopes)) {
+		cost += s.mutationCost(i)
+	}
+	return cost
+}
+
+// generateMutationVariables flattens the per-mutation variable lists into one
+// section. Each row names the mutation it belongs to, because a variable two
+// mutations read is evaluated -- and charged -- once for each of them.
+func (s *evalSections) generateMutationVariables() []*EvalVariable {
+	var variables []*EvalVariable
+	for i, scope := range s.mutationScopes {
+		for _, variable := range generateEvalVariables(scope) {
+			variable.Name = fmt.Sprintf("mutations[%d].%s", i, variable.Name)
+			variables = append(variables, variable)
+		}
+	}
+	return variables
 }
 
 // exceededBudgets reports the chains that ran past the budget the apiserver
@@ -323,6 +397,11 @@ func (s *evalSections) exceededBudgets() []*EvalResult {
 	}
 	report("validations and messageExpressions", validations, celconfig.RuntimeCELCostBudget)
 	report("auditAnnotations", auditAnnotations, celconfig.RuntimeCELCostBudget)
+	// Each mutation is patched on its own, with a whole budget each, so the
+	// mutations of one policy never share one.
+	for i := range max(len(s.mutations), len(s.mutationScopes)) {
+		report(fmt.Sprintf("mutations[%d]", i), s.mutationCost(i), celconfig.RuntimeCELCostBudget)
+	}
 	return exceeded
 }
 
@@ -332,11 +411,12 @@ func (s *evalSections) exceededBudgets() []*EvalResult {
 // that are.
 func (s *evalSections) response() *EvalResponse {
 	matchConditions, validations, auditAnnotations := s.chainCosts()
-	cost := matchConditions + validations + auditAnnotations
+	cost := matchConditions + validations + auditAnnotations + s.mutationsCost()
 
 	return &EvalResponse{
 		Decision:                   s.decision,
 		ExceededBudgets:            s.exceededBudgets(),
+		Warnings:                   s.warnings,
 		MatchConditions:            generateEvalResults(s.matchConditions),
 		ValidationVariables:        generateEvalVariables(s.validationScope),
 		Validations:                generateEvalResults(s.validations),
@@ -344,6 +424,11 @@ func (s *evalSections) response() *EvalResponse {
 		MessageExpressions:         generateEvalResults(s.messageExpressions),
 		AuditAnnotationVariables:   generateEvalVariables(s.auditAnnotationScope),
 		AuditAnnotations:           generateEvalResults(s.auditAnnotations),
+		MutationVariables:          s.generateMutationVariables(),
+		Mutations:                  s.mutations,
+		Diff:                       s.diff,
+		FinalObject:                s.finalObject,
+		NotSimulated:               s.notSimulated,
 		WebhookMatchConditions:     generateEvalArrayResults(s.webhookMatchConditions),
 		Cost:                       &cost,
 	}

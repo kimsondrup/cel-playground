@@ -45,6 +45,14 @@ type CelMatchConditionsInfo struct {
 	expression string
 }
 
+// CelMutationInfo is one entry of a MutatingAdmissionPolicy's spec.mutations.
+// patchType decides which of upstream's two patchers applies the expression and
+// which CEL return type it is compiled against.
+type CelMutationInfo struct {
+	patchType  admissionregistrationv1.PatchType
+	expression string
+}
+
 type CelInformation struct {
 	// hasParams follows spec.paramKind, which is what decides whether `params`
 	// is declared for a policy's expressions.
@@ -58,6 +66,11 @@ type CelInformation struct {
 	auditAnnotations       []CelAuditAnnotationsInfo
 	matchConditions        []CelMatchConditionsInfo
 	webhookMatchConditions [][]CelMatchConditionsInfo
+	mutations              []CelMutationInfo
+	// reinvocationPolicy and hasMatchConstraints are reported rather than acted
+	// on: what they change happens outside one policy's evaluation.
+	reinvocationPolicy  admissionregistrationv1.ReinvocationPolicyType
+	hasMatchConstraints bool
 }
 
 const admissionregistrationGroup = "admissionregistration.k8s.io"
@@ -74,15 +87,19 @@ const admissionregistrationGroup = "admissionregistration.k8s.io"
 // account against the real per-version types on every dependency bump.
 var acceptedVersions = map[string][]string{
 	"ValidatingAdmissionPolicy":      {"v1", "v1beta1", "v1alpha1"},
+	"MutatingAdmissionPolicy":        {"v1", "v1beta1", "v1alpha1"},
 	"ValidatingWebhookConfiguration": {"v1", "v1beta1"},
 	"MutatingWebhookConfiguration":   {"v1", "v1beta1"},
 }
 
-// policyKind and webhookKinds are what each mode evaluates. A configuration
-// pasted into the policy editor decodes perfectly well and carries nothing the
-// policy evaluator looks at, so without this the panel would come back empty
-// and say nothing.
-const policyKind = "ValidatingAdmissionPolicy"
+// policyKind, mutatingPolicyKind and webhookKinds are what each mode evaluates.
+// A configuration pasted into the policy editor decodes perfectly well and
+// carries nothing that evaluator looks at, so without this the panel would come
+// back empty and say nothing.
+const (
+	policyKind         = "ValidatingAdmissionPolicy"
+	mutatingPolicyKind = "MutatingAdmissionPolicy"
+)
 
 var webhookKinds = []string{"ValidatingWebhookConfiguration", "MutatingWebhookConfiguration"}
 
@@ -105,6 +122,12 @@ func extractCelInformation(input []byte, wanted ...string) (*CelInformation, err
 			return nil, fmt.Errorf("failed to decode input: %w", err)
 		}
 		return extractPolicyCelInformation(policy), nil
+	case "MutatingAdmissionPolicy":
+		policy := &admissionregistrationv1.MutatingAdmissionPolicy{}
+		if err := decodeTyped(input, policy, false); err != nil {
+			return nil, fmt.Errorf("failed to decode input: %w", err)
+		}
+		return extractMutatingPolicyCelInformation(policy), nil
 	case "ValidatingWebhookConfiguration":
 		configuration := &admissionregistrationv1.ValidatingWebhookConfiguration{}
 		if err := decodeTyped(input, configuration, false); err != nil {
@@ -239,6 +262,47 @@ func extractPolicyCelInformation(policy *admissionregistrationv1.ValidatingAdmis
 		validations:      validations,
 		auditAnnotations: auditAnnotations,
 		matchConditions:  extractMatchConditions(policy.Spec.MatchConditions),
+	}
+}
+
+func extractMutatingPolicyCelInformation(policy *admissionregistrationv1.MutatingAdmissionPolicy) *CelInformation {
+	variables := make([]CelVariableInfo, 0, len(policy.Spec.Variables))
+	for _, variable := range policy.Spec.Variables {
+		variables = append(variables, CelVariableInfo{
+			name:       variable.Name,
+			expression: variable.Expression,
+		})
+	}
+
+	// A mutation whose patch type names a body it does not carry keeps its
+	// place in the list with an empty expression, so the panel numbers the
+	// mutations the way the policy does and the entry reports what is wrong
+	// with it rather than vanishing.
+	mutations := make([]CelMutationInfo, 0, len(policy.Spec.Mutations))
+	for _, mutation := range policy.Spec.Mutations {
+		info := CelMutationInfo{patchType: mutation.PatchType}
+		switch {
+		case mutation.PatchType == admissionregistrationv1.PatchTypeApplyConfiguration && mutation.ApplyConfiguration != nil:
+			info.expression = mutation.ApplyConfiguration.Expression
+		case mutation.PatchType == admissionregistrationv1.PatchTypeJSONPatch && mutation.JSONPatch != nil:
+			info.expression = mutation.JSONPatch.Expression
+		}
+		mutations = append(mutations, info)
+	}
+
+	failurePolicy := admissionregistrationv1.Fail
+	if policy.Spec.FailurePolicy != nil {
+		failurePolicy = *policy.Spec.FailurePolicy
+	}
+
+	return &CelInformation{
+		hasParams:           policy.Spec.ParamKind != nil,
+		failurePolicy:       failurePolicy,
+		reinvocationPolicy:  policy.Spec.ReinvocationPolicy,
+		hasMatchConstraints: policy.Spec.MatchConstraints != nil,
+		variables:           variables,
+		mutations:           mutations,
+		matchConditions:     extractMatchConditions(policy.Spec.MatchConditions),
 	}
 }
 
