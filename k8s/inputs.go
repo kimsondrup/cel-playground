@@ -21,10 +21,14 @@ import (
 
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/admission"
 	celplugin "k8s.io/apiserver/pkg/admission/plugin/cel"
 	"k8s.io/apiserver/pkg/authentication/user"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/cel/library"
 )
 
@@ -42,13 +46,32 @@ type evalInputs struct {
 	namespaceObject           map[string]any
 	authorizer                any
 	requestResourceAuthorizer any
+
+	// The typed forms of the same tabs. Upstream's mutating patchers take these
+	// rather than the flattened maps, and it is the same values either way, so
+	// the two halves of a MutatingAdmissionPolicy cannot disagree about what
+	// was in the editor.
+	objectValue    *unstructured.Unstructured
+	oldObjectValue *unstructured.Unstructured
+	// namespace is untrimmed. The mutating dispatcher passes the Namespace as it
+	// read it, where the validating validator passes it through
+	// CreateNamespaceObject first.
+	namespace *corev1.Namespace
+	// attributes is what the Request tab stands for, and admissionRequest is
+	// what the apiserver derives from it and binds as `request`.
+	attributes       admission.Attributes
+	admissionRequest *admissionv1.AdmissionRequest
+	rbacAuthorizer   authorizer.Authorizer
 }
 
-// newEvalInputs decodes the playground's editor tabs. namespaceInput may be nil
-// for cluster-scoped requests; requestInput may be nil, in which case `request`
-// is bound to an empty AdmissionRequest rather than left undeclared -- that is
-// what a cluster does, and it means `request.name` reads as "" instead of
-// failing to compile.
+// newEvalInputs decodes the playground's editor tabs.
+//
+// `request` is not the tab: it is what the apiserver builds out of the
+// admission attributes with CreateAdmissionRequest, which is the only way any
+// expression on a cluster ever sees it. The tab supplies the attributes, so
+// everything it names is carried through, and the fields a cluster derives --
+// requestKind, requestResource, dryRun and the operation's options -- are
+// derived here too instead of reading as absent.
 func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, authorizerInput []byte) (*evalInputs, error) {
 	oldObject, err := decodeObjectInput(oldObjectInput)
 	if err != nil {
@@ -70,25 +93,81 @@ func newEvalInputs(oldObjectInput, objectInput, namespaceInput, requestInput, au
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode input for the request: %w", err)
 	}
-	requestMap, err := objectToMap(request)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert the request for evaluation: %w", err)
-	}
 
-	authorizer, err := NewRBACAuthorizer(authorizerInput)
+	rbacAuthorizer, err := NewRBACAuthorizer(authorizerInput)
 	if err != nil {
 		return nil, err
 	}
 	userInfo := requestUserInfo(request)
+
+	objectValue := unstructuredOrNil(object)
+	oldObjectValue := unstructuredOrNil(oldObject)
+	operation := admission.Operation(request.Operation)
+	attributes := admission.NewAttributesRecord(
+		runtimeObject(objectValue), runtimeObject(oldObjectValue),
+		schema.GroupVersionKind(request.Kind),
+		request.Namespace, request.Name,
+		schema.GroupVersionResource(request.Resource),
+		request.SubResource, operation, operationOptions(operation),
+		request.DryRun != nil && *request.DryRun, userInfo,
+	)
+	admissionRequest := celplugin.CreateAdmissionRequest(attributes,
+		metav1.GroupVersionResource(attributes.GetResource()),
+		metav1.GroupVersionKind(attributes.GetKind()))
+	requestMap, err := objectToMap(admissionRequest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert the request for evaluation: %w", err)
+	}
 
 	return &evalInputs{
 		object:                    object,
 		oldObject:                 oldObject,
 		namespaceObject:           namespaceObject,
 		request:                   requestMap,
-		authorizer:                library.NewAuthorizerVal(userInfo, authorizer),
-		requestResourceAuthorizer: library.NewResourceAuthorizerVal(userInfo, authorizer, requestResource{request: request}),
+		authorizer:                library.NewAuthorizerVal(userInfo, rbacAuthorizer),
+		requestResourceAuthorizer: library.NewResourceAuthorizerVal(userInfo, rbacAuthorizer, attributes),
+		objectValue:               objectValue,
+		oldObjectValue:            oldObjectValue,
+		namespace:                 namespace,
+		attributes:                attributes,
+		admissionRequest:          admissionRequest,
+		rbacAuthorizer:            rbacAuthorizer,
 	}, nil
+}
+
+// operationOptions is the options object a cluster attaches to the request for
+// each operation. An operation the Request tab does not name gets none, rather
+// than an invented CreateOptions.
+func operationOptions(operation admission.Operation) runtime.Object {
+	switch operation {
+	case admission.Create:
+		return &metav1.CreateOptions{}
+	case admission.Update:
+		return &metav1.UpdateOptions{}
+	case admission.Delete:
+		return &metav1.DeleteOptions{}
+	default:
+		return nil
+	}
+}
+
+// unstructuredOrNil wraps a decoded tab, or returns nil for an empty one.
+func unstructuredOrNil(content map[string]any) *unstructured.Unstructured {
+	if len(content) == 0 {
+		return nil
+	}
+	return &unstructured.Unstructured{Object: content}
+}
+
+// runtimeObject turns an absent object into an untyped nil. A nil
+// *unstructured.Unstructured stored in a runtime.Object is not nil, and both
+// the admission attributes and the CEL activation test the interface against
+// nil to decide whether `object` binds as null.
+func runtimeObject(value *unstructured.Unstructured) runtime.Object {
+	if value == nil {
+		return nil
+	}
+	return value
 }
 
 // decodeNamespaceInput parses the namespace tab as a real core/v1 Namespace.
@@ -103,11 +182,10 @@ func decodeNamespaceInput(input []byte) (*corev1.Namespace, error) {
 	return namespace, nil
 }
 
-// decodeRequestInput parses the request tab as a real AdmissionRequest. The
-// playground's request tab already *is* the admission request, so there is
-// nothing for celplugin.CreateAdmissionRequest to derive -- that helper exists
-// to build a request out of admission.Attributes, which the playground does not
-// have.
+// decodeRequestInput parses the request tab as a real AdmissionRequest. The tab
+// is written in the shape an expression reads, which is the shape a cluster
+// hands to CEL; the attributes it stands for are rebuilt from it in
+// newEvalInputs.
 //
 // It is read strictly. AdmissionRequest and Namespace are closed types, and a
 // field the playground silently drops is a field the user believes they set:
@@ -144,22 +222,4 @@ func requestUserInfo(request *admissionv1.AdmissionRequest) user.Info {
 		}
 	}
 	return info
-}
-
-// requestResource adapts the admission request to library.Resource, which is
-// what apiserver uses to preconfigure `authorizer.requestResource`.
-type requestResource struct {
-	request *admissionv1.AdmissionRequest
-}
-
-func (r requestResource) GetName() string        { return r.request.Name }
-func (r requestResource) GetNamespace() string   { return r.request.Namespace }
-func (r requestResource) GetSubresource() string { return r.request.SubResource }
-
-func (r requestResource) GetResource() schema.GroupVersionResource {
-	return schema.GroupVersionResource{
-		Group:    r.request.Resource.Group,
-		Version:  r.request.Resource.Version,
-		Resource: r.request.Resource.Resource,
-	}
 }

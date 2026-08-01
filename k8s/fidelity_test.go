@@ -459,3 +459,60 @@ func TestWebhookCallDecision(t *testing.T) {
 		})
 	}
 }
+
+// `request` is never the Request tab as typed: a cluster builds it from the
+// admission attributes with plugincel.CreateAdmissionRequest, which fills in
+// requestKind, requestResource, dryRun and the operation's options whatever the
+// tab says. Binding the tab directly leaves all four absent, so an expression
+// reading one fails here and answers on a cluster.
+//
+// Upstream: plugin/policy/validating/validator.go and
+// plugin/webhook/matchconditions/matcher.go both call CreateAdmissionRequest.
+func TestRequestIsBuiltFromTheAdmissionAttributes(t *testing.T) {
+	const request = `
+kind:
+  group: apps
+  version: v1
+  kind: Deployment
+resource:
+  group: apps
+  version: v1
+  resource: deployments
+name: web
+namespace: production
+operation: CREATE
+userInfo:
+  username: alice
+`
+	tests := []struct {
+		name       string
+		expression string
+	}{
+		{"requestKind mirrors kind", `request.requestKind.kind == 'Deployment'`},
+		{"requestResource mirrors resource", `request.requestResource.resource == 'deployments'`},
+		{"dryRun is always present", `request.dryRun == false`},
+		{"options is present for the operation", `has(request.options)`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: request-shape\nspec:\n  validations:\n    - expression: \"" + tt.expression + "\"\n"
+			out, err := EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte(fidelityObject), nil, []byte(request), nil)
+			if err != nil {
+				t.Fatalf("EvalValidatingAdmissionPolicy() error: %v", err)
+			}
+			response := EvalResponse{}
+			if err := json.Unmarshal([]byte(out), &response); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v", err)
+			}
+			if len(response.Validations) != 1 {
+				t.Fatalf("got %d validations, want 1", len(response.Validations))
+			}
+			if response.Validations[0].IsError {
+				t.Fatalf("%s errored: %s", tt.expression, *response.Validations[0].Error)
+			}
+			if response.Validations[0].Result != true {
+				t.Errorf("%s = %v, want true", tt.expression, response.Validations[0].Result)
+			}
+		})
+	}
+}
