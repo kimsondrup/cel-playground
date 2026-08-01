@@ -45,10 +45,11 @@ import (
 // in it. Both are produced and held to account by k8s/oracle's
 // TestBuiltinSchemaIsCurrent, where importing client-go is free.
 //
-// Kinds outside that index -- custom resources -- have no schema here and fall
-// back to a deduced converter, which merges every list atomically. That is what
-// a cluster does for a CRD whose schema it cannot resolve, and it is reported
-// rather than left silent.
+// Kinds outside that index -- custom resources -- have no schema here at all,
+// and an ApplyConfiguration on one is refused rather than guessed: a cluster
+// reads the CRD's schema and then merges a list by key or refuses the patch as
+// atomic depending on what it says, and neither answer can be reached from
+// here. A JSONPatch does not merge and needs no schema.
 
 //go:embed builtinschema.yaml
 var builtinSchemaYAML string
@@ -80,16 +81,16 @@ func loadBuiltins() {
 	})
 }
 
-// typeConverterFor returns the merge-semantics provider for gvk. The second
-// return reports whether a real schema was found; when it is false the deduced
-// converter is returned, which never fails and never merges by key.
+// typeConverterFor returns the merge-semantics provider for gvk, and whether
+// there is one. There is no fallback: nil is what a JSONPatch is given, which
+// never reads it, and an ApplyConfiguration is refused before it could.
 func typeConverterFor(gvk schema.GroupVersionKind) (managedfields.TypeConverter, bool) {
 	loadBuiltins()
 	if builtins.err != nil || builtins.parser == nil {
-		return managedfields.NewDeducedTypeConverter(), false
+		return nil, false
 	}
 	if _, ok := builtinTypeName(gvk); !ok {
-		return managedfields.NewDeducedTypeConverter(), false
+		return nil, false
 	}
 	return builtinTypeConverter{}, true
 }

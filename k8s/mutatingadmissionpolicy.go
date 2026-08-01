@@ -157,6 +157,7 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 	}
 	gvk := object.GroupVersionKind()
 	if gvk.Kind == "" || gvk.Version == "" {
+		s.mutationsUnevaluable = true
 		s.failEveryMutation(celInfo, errNoObjectGVK)
 		return
 	}
@@ -332,6 +333,11 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		// would present a re-serialization of what the user typed as a result.
 		return
 	}
+	if s.mutationRejected(celInfo) {
+		s.warnings = append(s.warnings, "A cluster would have applied none of this: one of the mutations "+
+			"failed and the request is denied. The object below is what the mutations that did run "+
+			"produced, which is not a state any cluster reaches.")
+	}
 	s.finalObject = current
 	// The diff of two objects near the ceiling is larger than either of them,
 	// and it is the least useful of the three when it is that big.
@@ -448,22 +454,30 @@ func notSimulated(celInfo *CelInformation) string {
 		lines = append(lines, matchConstraintsCaveat(len(celInfo.mutations) > 0))
 	}
 	if celInfo.hasParams {
-		lines = append(lines, "paramKind: there is no params tab, so params is bound to null -- the "+
-			"state a cluster reaches when a binding names no paramRef at all. A binding whose paramRef "+
-			"selects nothing behaves differently again: it either skips the policy or denies the "+
-			"request, depending on parameterNotFoundAction.")
+		lines = append(lines, paramKindCaveat)
 	}
 	if celInfo.reinvocationPolicy == admissionregistrationv1.IfNeededReinvocationPolicy {
 		lines = append(lines, "reinvocationPolicy: IfNeeded asks for another pass once other plugins "+
 			"have mutated the object. Each mutation here runs exactly once.")
 	}
 	if len(celInfo.mutations) > 0 {
-		lines = append(lines, "API defaults: the object is used exactly as typed. A cluster defaults it "+
-			"before admission and again after every mutation, so a field like imagePullPolicy is "+
-			"already set there and a !has(...) guard can fire here where it would not.")
+		lines = append(lines, defaultingCaveat+" A cluster defaults the object before admission and "+
+			"again after every mutation, so a field like imagePullPolicy is already set there.")
 	}
 	return strings.Join(lines, "\n")
 }
+
+// defaultingCaveat opens the line both policy modes carry about defaulting: an
+// expression that guards on a field's absence fires here and would not on a
+// cluster, whether the expression is a validation or a mutation.
+const defaultingCaveat = "API defaults: the object is used exactly as typed, so a !has(...) guard can " +
+	"fire here where it would not."
+
+// paramKindCaveat is the same in both policy modes: there is no params tab.
+const paramKindCaveat = "paramKind: there is no params tab, so params is bound to null -- the state a " +
+	"cluster reaches when a binding names no paramRef at all. A binding whose paramRef selects " +
+	"nothing behaves differently again: it either skips the policy or denies the request, " +
+	"depending on parameterNotFoundAction."
 
 // matchConstraintsCaveat is shared with the validating mode: neither evaluates
 // spec.matchConstraints, because matching needs the request's resource -- the
@@ -485,10 +499,20 @@ func validatingNotSimulated(celInfo *CelInformation) string {
 		lines = append(lines, matchConstraintsCaveat(false))
 	}
 	if celInfo.hasParams {
-		lines = append(lines, "paramKind: there is no params tab, so params is bound to null -- the "+
-			"state a cluster reaches when a binding names no paramRef at all. A binding whose paramRef "+
-			"selects nothing behaves differently again: it either skips the policy or denies the "+
-			"request, depending on parameterNotFoundAction.")
+		lines = append(lines, paramKindCaveat)
 	}
+	lines = append(lines, defaultingCaveat+" A cluster defaults the object before admission runs.")
 	return strings.Join(lines, "\n")
+}
+
+// webhookNotSimulated is the webhook mode's half. It evaluates matchConditions
+// and nothing else: the rules and the selectors need the request's resource,
+// and the call itself needs somewhere to call.
+func webhookNotSimulated() string {
+	return strings.Join([]string{
+		"rules, namespaceSelector and objectSelector: every webhook's matchConditions are " +
+			"evaluated, whether or not the rest of its criteria would have selected this request.",
+		"the webhook itself is not called: what you see is whether the apiserver would call it, " +
+			"not what it would answer.",
+	}, "\n")
 }

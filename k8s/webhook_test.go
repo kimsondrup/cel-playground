@@ -187,6 +187,9 @@ func TestWebhookEval(t *testing.T) {
 					t.Errorf("Eval() reported no decision")
 				}
 				evalResponse.Decision = nil
+				// notSimulated is a property of the mode rather than of the
+				// run, and has a table of its own.
+				evalResponse.NotSimulated = ""
 				if !reflect.DeepEqual(tt.expected, evalResponse) {
 					expected, expErr := json.Marshal(tt.expected)
 					response, respErr := json.Marshal(evalResponse)

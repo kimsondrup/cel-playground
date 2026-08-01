@@ -275,6 +275,7 @@ func TestMutationEval(t *testing.T) {
 			Cost: uint64ptr(130),
 		},
 		decision: "rejected: mutations[0] produced an object the apiserver cannot decode, which fails the request whatever failurePolicy says",
+		warnings: []string{"A cluster would have applied none of this"},
 	}, {
 		name:    "a v1alpha1 policy evaluates as its v1 self",
 		policy:  "v1alpha1 policy.yaml",

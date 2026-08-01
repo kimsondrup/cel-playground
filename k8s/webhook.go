@@ -57,6 +57,7 @@ func EvalWebhook(webhookInput, oldObjectInput, objectValueInput, requestInput, a
 		sections.webhookMatchConditions = append(sections.webhookMatchConditions, matchConditionsEval)
 	}
 
+	sections.notSimulated = webhookNotSimulated()
 	sections.decision = sections.webhookDecisions(celInfo)
 
 	out, err := json.Marshal(sections.response())

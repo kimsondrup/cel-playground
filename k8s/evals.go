@@ -315,6 +315,9 @@ type evalSections struct {
 	// mutationsSkipped records that the mutations did not run because there was
 	// no object to mutate, which a cluster admits rather than fails.
 	mutationsSkipped bool
+	// mutationsUnevaluable records that the inputs, rather than the policy, are
+	// what stopped the mutations -- so there is no cluster decision to report.
+	mutationsUnevaluable bool
 
 	diff         string
 	finalObject  string

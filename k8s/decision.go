@@ -43,11 +43,14 @@ func admissionResult(admitted bool, message string) []*EvalResult {
 // condition and one false one is skipped rather than failed, under either
 // failurePolicy.
 func matchConditionDecision(responses evalResponses, conditions []CelMatchConditionsInfo, failurePolicy admissionregistrationv1.FailurePolicyType) []*EvalResult {
-	failed := -1
+	failed, uncompilable := -1, false
 	for i, condition := range responses {
 		if condition.isError() {
 			if failed < 0 {
-				failed = i
+				// A condition that cost nothing never ran: it failed to
+				// compile, which is a policy no cluster stores rather than a
+				// request any cluster decided.
+				failed, uncompilable = i, condition.cost == nil
 			}
 			continue
 		}
@@ -57,6 +60,11 @@ func matchConditionDecision(responses evalResponses, conditions []CelMatchCondit
 	}
 	if failed < 0 {
 		return nil
+	}
+	if uncompilable {
+		return admissionResult(false, fmt.Sprintf(
+			"no decision: matchCondition %q does not compile, so the apiserver would refuse to store this policy and no request ever reaches it",
+			conditions[failed].name))
 	}
 	if failurePolicy == admissionregistrationv1.Fail {
 		return admissionResult(false, fmt.Sprintf("rejected: matchCondition %q failed and failurePolicy is Fail", conditions[failed].name))
@@ -102,6 +110,10 @@ func (s *evalSections) mutationDecision(celInfo *CelInformation) []*EvalResult {
 		return decision
 	}
 
+	if s.mutationsUnevaluable {
+		return admissionResult(false, "no decision: the Object tab has to name an apiVersion and a kind before a mutation can run")
+	}
+
 	var failed, fatal []string
 	for i, mutation := range s.mutations {
 		if !mutation.IsError {
@@ -137,6 +149,24 @@ func (s *evalSections) mutationDecision(celInfo *CelInformation) []*EvalResult {
 		return result(true, "admitted: every mutation ran and left the object unchanged")
 	}
 	return result(true, "admitted: every mutation ran, and the object is mutated")
+}
+
+// mutationRejected reports whether a mutation failed in a way that denies the
+// request, which is what makes the object the panel shows one no cluster
+// produces.
+func (s *evalSections) mutationRejected(celInfo *CelInformation) bool {
+	for i, mutation := range s.mutations {
+		if !mutation.IsError {
+			continue
+		}
+		if celInfo.failurePolicy == admissionregistrationv1.Fail {
+			return true
+		}
+		if i < len(s.mutationFatal) && s.mutationFatal[i] {
+			return true
+		}
+	}
+	return false
 }
 
 // webhookDecisions reports, per webhook, whether the apiserver would call it.

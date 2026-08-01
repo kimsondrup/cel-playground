@@ -512,13 +512,44 @@ spec:
 	if err := json.Unmarshal([]byte(out), &response); err != nil {
 		t.Fatalf("json.Unmarshal() error: %v", err)
 	}
-	for _, want := range []string{"matchConstraints:", "paramKind:"} {
+	for _, want := range []string{"matchConstraints:", "paramKind:", "API defaults:"} {
 		if !strings.Contains(response.NotSimulated, want) {
 			t.Errorf("notSimulated does not mention %q:\n%s", want, response.NotSimulated)
 		}
 	}
-	if strings.Contains(response.NotSimulated, "API defaults") {
-		t.Errorf("the validating mode claims not to default, which it has no reason to:\n%s", response.NotSimulated)
+	if strings.Contains(response.NotSimulated, "reinvocationPolicy") {
+		t.Errorf("the validating mode claims not to reinvoke, which it never would:\n%s", response.NotSimulated)
+	}
+}
+
+// The webhook mode evaluates matchConditions and nothing else, and says so in
+// the same place the two policy modes do -- a reader trained by them to look
+// for the section should not find silence.
+func TestWebhookReportsWhatItDoesNotSimulate(t *testing.T) {
+	configuration := `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: hooks
+webhooks:
+  - name: hook.example.com
+    sideEffects: None
+    admissionReviewVersions: ["v1"]
+    matchConditions:
+      - name: always
+        expression: "true"
+`
+	out, err := k8s.EvalWebhook([]byte(configuration), nil, readMapFile(t, "object.yaml"), nil, nil)
+	if err != nil {
+		t.Fatalf("EvalWebhook() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	for _, want := range []string{"rules, namespaceSelector and objectSelector", "not called"} {
+		if !strings.Contains(response.NotSimulated, want) {
+			t.Errorf("notSimulated does not mention %q:\n%s", want, response.NotSimulated)
+		}
 	}
 }
 

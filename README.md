@@ -62,7 +62,7 @@ CEL mode.
 | `variables` | `spec.variables`, lazily. Not available in matchConditions: the apiserver refuses to store a policy whose matchConditions name it |
 | `Object{}`, `JSONPatch{}` | only inside a `MutatingAdmissionPolicy`'s `spec.mutations`, as on a cluster |
 | `authorizer`, `authorizer.requestResource` | the RBAC tab. Not declared for a `messageExpression`, and declared but unbound for an `auditAnnotation`, both as on a cluster |
-| `params` | declared only when the policy declares `spec.paramKind`. There is no params tab, so it is **null** — an expression that reads a field of it fails, as it would on a cluster whose paramRef selected nothing |
+| `params` | declared only when the policy declares `spec.paramKind`. There is no params tab, so it is **null** — an expression that reads a field of it fails, as it would on a cluster whose binding names no `paramRef`. A binding whose `paramRef` selects nothing is different again: `parameterNotFoundAction` decides whether the policy is skipped or the request denied |
 
 ## Reading the result panel
 
@@ -77,7 +77,7 @@ from both a validation and an audit annotation is evaluated twice and charged
 twice. The total at the top is the sum of everything that ran.
 
 The total is not a budget, though, and a policy is never rejected for exceeding
-it. There are three separate budgets: `matchConditions` get 2,500,000 each,
+it. There are three separate budgets: each *set* of `matchConditions` gets 2,500,000,
 `validations` and `messageExpressions` share 10,000,000, and `auditAnnotations`
 start again from a full 10,000,000. When a run goes past one of them an
 **exceededBudgets** section appears at the top of the panel saying which. A real
@@ -102,7 +102,7 @@ The mutations are applied by the apiserver's own patchers,
 `k8s.io/apiserver/pkg/admission/plugin/policy/mutating/patch`, in
 `spec.mutations` order, each against the object the one before it produced. The
 panel shows what each mutation produced, the object at the end, and a unified
-diff between the two.
+diff of that object against the one you pasted in.
 
 An `ApplyConfiguration` merges with server-side-apply semantics, which need the
 schema of the type being mutated: `spec.template.spec.initContainers` is
