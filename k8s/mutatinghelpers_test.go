@@ -736,5 +736,11 @@ func TestMutationNeedsTheObjectsGroupVersionKind(t *testing.T) {
 		if !strings.Contains(*response.Mutations[0].Error, "apiVersion and kind") {
 			t.Errorf("error = %q, want it to name what is missing", *response.Mutations[0].Error)
 		}
+		// An unfinished tab is not a cluster refusing anything, so the decision
+		// must not quote failurePolicy at the reader.
+		message, _ := response.Decision[0].Message.(string)
+		if !strings.Contains(message, "no decision") {
+			t.Errorf("decision = %q, want it to say there is no decision to report", message)
+		}
 	}
 }

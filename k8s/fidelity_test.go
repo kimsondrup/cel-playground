@@ -672,3 +672,57 @@ func TestANonBooleanMatchConditionDoesNotCompile(t *testing.T) {
 		})
 	}
 }
+
+// The decision row carries its sentence in Message and leaves Error empty,
+// because the decision is a statement about the request rather than something
+// that itself failed. The result panel renders the reason of anything marked
+// isError, so a rejecting decision that carried no message would render an
+// empty body -- and the decision is the section that opens by default.
+func TestARejectingDecisionCarriesItsReason(t *testing.T) {
+	policies := map[string]string{
+		"a validation fails":                "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: d\nspec:\n  validations:\n    - expression: \"false\"\n      message: \"nope\"\n",
+		"a validation errors":               "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: d\nspec:\n  validations:\n    - expression: \"object.spec.missing == 1\"\n",
+		"a matchCondition errors":           "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: d\nspec:\n  matchConditions:\n    - name: broken\n      expression: \"object.spec.missing == 1\"\n  validations:\n    - expression: \"true\"\n",
+		"a matchCondition does not compile": "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: d\nspec:\n  matchConditions:\n    - name: broken\n      expression: \"nosuchfunction(object)\"\n  validations:\n    - expression: \"true\"\n",
+	}
+	for name, policy := range policies {
+		t.Run(name, func(t *testing.T) {
+			response := evalFidelityPolicy(t, policy)
+			if len(response.Decision) != 1 {
+				t.Fatalf("got %d decisions, want 1", len(response.Decision))
+			}
+			decision := response.Decision[0]
+			if decision.Result != false {
+				t.Fatalf("the request was admitted; this case no longer rejects")
+			}
+			if !decision.IsError {
+				t.Errorf("a rejecting decision is not marked as an error, so the panel renders it as an ordinary value")
+			}
+			if message, _ := decision.Message.(string); message == "" {
+				t.Errorf("a rejecting decision carries no message, so the panel renders an empty body")
+			}
+			if decision.Error != nil {
+				t.Errorf("a decision carries an error as well as a message: %q", *decision.Error)
+			}
+		})
+	}
+}
+
+// A matchCondition that does not compile is a policy the registry refuses to
+// store, so no request ever reaches it and failurePolicy never applies.
+func TestAnUncompilableMatchConditionHasNoClusterDecision(t *testing.T) {
+	for _, failurePolicy := range []string{"Fail", "Ignore"} {
+		t.Run(failurePolicy, func(t *testing.T) {
+			policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: d\nspec:\n  failurePolicy: " +
+				failurePolicy + "\n  matchConditions:\n    - name: broken\n      expression: \"nosuchfunction(object)\"\n  validations:\n    - expression: \"true\"\n"
+			response := evalFidelityPolicy(t, policy)
+			message, _ := response.Decision[0].Message.(string)
+			if !strings.Contains(message, "refuse to store this policy") {
+				t.Errorf("decision = %q, want it to say the policy cannot be stored rather than quoting failurePolicy", message)
+			}
+			if strings.Contains(message, "failurePolicy") {
+				t.Errorf("decision = %q, and failurePolicy has nothing to do with a policy that was never stored", message)
+			}
+		})
+	}
+}
