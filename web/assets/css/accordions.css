@@ -85,6 +85,17 @@
   color: #e01e5a;
 }
 
+/* A filled glyph fills its whole em box, so it overshoots the label's capitals
+   at 1em. Sized down to sit level with them. */
+.editor__output-result-accordion .result-accordion-warning-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85em;
+  line-height: 1;
+  color: #e2b93d;
+}
+
 .editor__output-result-accordion .result-error {
   color: #e01e5a;
 }
@@ -178,4 +189,64 @@
   margin: 0;
   max-height: var(--result-body-max-height);
   overflow: auto;
+}
+
+/* Warnings are sentences, so they wrap to the panel instead of scrolling
+   sideways the way the <pre> bodies above do. break-word rather than anywhere:
+   a group-version like networking.k8s.io/v1alpha1 should only be split when it
+   genuinely cannot fit. */
+.editor__output-result-accordion
+  .result-accordion-expansible-content
+  .result-warning {
+  margin: 0;
+  max-height: var(--result-body-max-height);
+  overflow: auto;
+  /* Newlines are honoured for the same reason as the note below, though a
+     warning is one sentence today and has none. */
+  white-space: pre-line;
+  overflow-wrap: break-word;
+  line-height: 1.5;
+}
+
+/* The standing limits of the mode rather than something wrong with this result,
+   so it is muted where a warning is amber. Wraps like the warning body. */
+.editor__output-result-accordion
+  .result-accordion-expansible-content
+  .result-note {
+  margin: 0;
+  max-height: var(--result-body-max-height);
+  overflow: auto;
+  /* pre-line, not normal: the caveats arrive as one string with a newline
+     between each, and each needs its own line. Other whitespace still
+     collapses, so the sentences wrap to the panel. */
+  white-space: pre-line;
+  overflow-wrap: break-word;
+  line-height: 1.5;
+  /* Muted, but still prose to read: 4.8:1 on the expanded card. */
+  color: #9aa5b1;
+}
+
+/* The file and hunk headers are frame rather than content, but the hunk header
+   carries line numbers, so this stays readable: 4.8:1 on the expanded card. */
+.editor__output-result-accordion
+  .result-accordion-expansible-content
+  .diff-file,
+.editor__output-result-accordion
+  .result-accordion-expansible-content
+  .diff-hunk {
+  color: #9aa5b1;
+}
+
+.editor__output-result-accordion
+  .result-accordion-expansible-content
+  .diff-add {
+  color: #4ec9b0;
+}
+
+/* Lighter than .result-error above, which is a short label rather than bulk
+   text: #e01e5a on the expanded card's #33373d is 2.6:1, where this is 5.4:1. */
+.editor__output-result-accordion
+  .result-accordion-expansible-content
+  .diff-del {
+  color: #ff8ba0;
 }

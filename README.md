@@ -6,6 +6,25 @@
 CEL Playground is an interactive WebAssembly (Wasm) powered environment to explore and experiment with the [Common Expression Language (CEL)](https://github.com/google/cel-spec).
 It provides a simple and user-friendly interface to write and quickly evaluate CEL expressions.
 
+## Modes
+
+The playground evaluates several kinds of CEL input, selectable from the **Modes** button:
+
+- **CEL Expression** — a bare expression against an arbitrary input document.
+- **Validating Admission Policy** — a
+  [ValidatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/),
+  for whether a request would be *admitted*: `matchConditions`, `variables`,
+  `validations`, `messageExpressions` and `auditAnnotations`.
+- **Mutating Admission Policy** — a
+  [MutatingAdmissionPolicy](https://kubernetes.io/docs/reference/access-authn-authz/mutating-admission-policy/)
+  (`admissionregistration.k8s.io/v1`, GA in Kubernetes 1.36; `v1beta1` and
+  `v1alpha1` documents are accepted too), for how a request's object is
+  *mutated*: `matchConditions`, `variables`, the object each `spec.mutations`
+  entry produces under both the `ApplyConfiguration` and `JSONPatch` patch
+  types, and a diff against the object you started from.
+- **Web Hooks** — `matchConditions` on validating and mutating webhook
+  configurations.
+
 ## CEL libraries
 
 CEL Playground is built by compiling Go code to WebAssembly and includes the following libraries that are available in the environment:
@@ -16,7 +35,8 @@ CEL Playground is built by compiling Go code to WebAssembly and includes the fol
 - [Kubernetes URL library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-url-library)
 - [Kubernetes semver library](https://kubernetes.io/docs/reference/using-api/cel/#kubernetes-semver-library)
 
-The Kubernetes policy modes (Validating Admission Policy and Web Hooks) do not
+The Kubernetes policy modes (Validating Admission Policy, Mutating Admission
+Policy and Web Hooks) do not
 assemble an environment of their own. They compile and evaluate expressions with
 the apiserver's own compiler, `k8s.io/apiserver/pkg/admission/plugin/cel`, so
 whichever libraries a cluster offers are exactly the ones offered here -- the
@@ -37,9 +57,10 @@ CEL mode.
 |---|---|
 | `object` | the object from the request; null for DELETE |
 | `oldObject` | the existing object; null for CREATE |
-| `request` | the AdmissionRequest tab, read strictly |
-| `namespaceObject` | the Namespace tab, trimmed the way a cluster trims it. Null while matchConditions are evaluated, because the matcher passes no namespace |
+| `request` | built from the Request tab the way the apiserver builds it, so `requestKind`, `requestResource`, `dryRun` and `options` are filled in from the rest. The tab is read strictly |
+| `namespaceObject` | the Namespace tab. Null while matchConditions are evaluated, because the matcher passes no namespace. Trimmed for a validation, untrimmed for a mutation, following the two upstream call sites |
 | `variables` | `spec.variables`, lazily. Not available in matchConditions: the apiserver refuses to store a policy whose matchConditions name it |
+| `Object{}`, `JSONPatch{}` | only inside a `MutatingAdmissionPolicy`'s `spec.mutations`, as on a cluster |
 | `authorizer`, `authorizer.requestResource` | the RBAC tab. Not declared for a `messageExpression`, and declared but unbound for an `auditAnnotation`, both as on a cluster |
 | `params` | declared only when the policy declares `spec.paramKind`. There is no params tab, so it is **null** — an expression that reads a field of it fails, as it would on a cluster whose paramRef selected nothing |
 
@@ -62,6 +83,55 @@ start again from a full 10,000,000. When a run goes past one of them an
 **exceededBudgets** section appears at the top of the panel saying which. A real
 cluster would abandon the rest of that chain and reject the request; the
 playground keeps going so the expression that overran is still visible.
+
+A `MutatingAdmissionPolicy` is the same idea with a different set of batches:
+`matchConditions`, then one per `spec.mutations` entry. Each mutation is patched
+on its own with a whole 10,000,000 budget of its own, so two mutations that each
+stay inside it never add up to an overrun, and a variable both of them read is
+evaluated -- and charged -- once for each.
+
+## Mutating Admission Policy
+
+The mutations are applied by the apiserver's own patchers,
+`k8s.io/apiserver/pkg/admission/plugin/policy/mutating/patch`, in
+`spec.mutations` order, each against the object the one before it produced. The
+panel shows what each mutation produced, the object at the end, and a unified
+diff between the two.
+
+An `ApplyConfiguration` merges with server-side-apply semantics, which need the
+schema of the type being mutated: `spec.template.spec.initContainers` is
+`listType=map` keyed by `name`, so adding one entry merges by name rather than
+replacing the list. That schema is compiled into the binary, generated from the
+same `+listType` markers a cluster's own `/openapi/v3` is generated from, and it
+covers the built-in APIs only. A custom resource has no schema here and falls
+back to treating every list as atomic — which is what a cluster does with a
+schema it cannot resolve — and the panel says so.
+
+A patched built-in is read back through that schema, because a cluster decodes
+the result strictly. A misspelled field in an `Object{}` initializer or a quoted
+number written by a `JSONPatch` is refused here for the same reason it is
+refused there, rather than appearing in the output as though it had worked.
+
+What the mode parses and does not act on is repeated on screen in a
+**notSimulated** section, so a policy that would behave differently on a cluster
+never reports a confident result:
+
+- `matchConstraints` are parsed but not evaluated. The mutations run against
+  whatever is in the Object tab, whether or not the `resourceRules` would select
+  it, so only `matchConditions` stop one from running.
+- `params` has no input tab and is bound to null, exactly as on a cluster whose
+  binding selected no parameter object.
+- `reinvocationPolicy: IfNeeded` asks for another pass once some other plugin
+  has mutated the object. There is no other plugin here, so each mutation runs
+  once.
+- API defaults are not applied. A cluster defaults the object before admission
+  and again after every mutation, so a `!has(...)` guard can fire here where it
+  would not.
+
+`failurePolicy` *is* simulated: a failed mutation under the default `Fail`
+denies the request, and the decision at the top of the panel says so. The
+playground still shows what the other mutations did, because that is what the
+panel is for.
 
 ## The RBAC tab
 

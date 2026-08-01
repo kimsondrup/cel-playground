@@ -42,6 +42,8 @@ update-data: ## Update the example files
 	yq -ojson -i '.versions.cel-go = "$(CEL_GO_VERSION)"' web/assets/examples/vap.json
 	yq -ojson '.' webhooks_examples.yaml > web/assets/examples/webhooks.json
 	yq -ojson -i '.versions.cel-go = "$(CEL_GO_VERSION)"' web/assets/examples/webhooks.json
+	yq -ojson '.' mutating_examples.yaml > web/assets/examples/map.json
+	yq -ojson -i '.versions.cel-go = "$(CEL_GO_VERSION)"' web/assets/examples/map.json
 
 .PHONY: addlicense
 addlicense: ## Add copyright license headers in source code files.

@@ -48,6 +48,18 @@ func TestShippedExamplesEvaluate(t *testing.T) {
 			)
 		},
 	}, {
+		file: "../mutating_examples.yaml",
+		eval: func(example map[string]string) (string, error) {
+			return k8s.EvalMutatingAdmissionPolicy(
+				[]byte(example["map"]),
+				[]byte(example["dataOldObject"]),
+				[]byte(example["dataObject"]),
+				[]byte(example["dataNamespace"]),
+				[]byte(example["dataRequest"]),
+				[]byte(example["dataAuthorizer"]),
+			)
+		},
+	}, {
 		file: "../webhooks_examples.yaml",
 		eval: func(example map[string]string) (string, error) {
 			return k8s.EvalWebhook(
@@ -94,6 +106,20 @@ func TestShippedExamplesEvaluate(t *testing.T) {
 				assertNoVariableErrors(t, "validationVariables", response.ValidationVariables)
 				assertNoVariableErrors(t, "messageExpressionVariables", response.MessageExpressionVariables)
 				assertNoVariableErrors(t, "auditAnnotationVariables", response.AuditAnnotationVariables)
+				assertNoVariableErrors(t, "mutationVariables", response.MutationVariables)
+				for i, mutation := range response.Mutations {
+					if mutation.IsError {
+						t.Errorf("mutations[%d] failed: %s", i, *mutation.Error)
+					}
+				}
+				// An example that shows a mutation has to produce one; one that
+				// silently changed nothing teaches the wrong lesson.
+				if len(response.Mutations) > 0 && response.FinalObject == "" {
+					t.Errorf("the example's mutations left the object unchanged")
+				}
+				if len(response.Warnings) > 0 {
+					t.Errorf("the example raises a warning: %s", response.Warnings[0])
+				}
 				if len(response.ExceededBudgets) > 0 {
 					t.Errorf("the example runs past a cost budget: %v", *response.ExceededBudgets[0].Error)
 				}
