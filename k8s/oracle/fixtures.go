@@ -40,6 +40,27 @@ func VAPFixture(name string) string { return filepath.Join(RepoTestdata, "vap", 
 // WebhookFixture returns the path of a fixture under k8s/testdata/webhook.
 func WebhookFixture(name string) string { return filepath.Join(RepoTestdata, "webhook", name) }
 
+// MapFixture returns the path of a fixture under k8s/testdata/map.
+func MapFixture(name string) string { return filepath.Join(RepoTestdata, "map", name) }
+
+// LoadMutatingPolicy reads a MutatingAdmissionPolicy from a YAML file,
+// rewriting whatever apiVersion it declares onto the one this apiserver serves.
+// The three versions are structurally identical, which is what lets one fixture
+// drive both the in-process oracle and a real cluster.
+func LoadMutatingPolicy(path string) (*admissionregistrationv1.MutatingAdmissionPolicy, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var policy admissionregistrationv1.MutatingAdmissionPolicy
+	if err := yaml.UnmarshalStrict(data, &policy); err != nil {
+		return nil, fmt.Errorf("decoding %s: %w", path, err)
+	}
+	policy.APIVersion = admissionregistrationv1.SchemeGroupVersion.String()
+	policy.Kind = "MutatingAdmissionPolicy"
+	return &policy, nil
+}
+
 // LoadPolicy reads a ValidatingAdmissionPolicy from a YAML file.
 //
 // Whatever apiVersion the document declares, it is decoded into the v1 Go
