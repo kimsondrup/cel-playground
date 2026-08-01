@@ -22,6 +22,8 @@ import {
 import { getWarningsOpen, setWarningsOpen } from "../../utils/localStorage.js";
 
 const outputResultEl = document.getElementById("editor__output-result");
+// Numbers the section bodies so each header can name the one it controls.
+let sectionCount = 0;
 const holderEl = document.querySelector(".editor__output-holder");
 
 // Everything the evaluator returns is built from what the user typed -- CEL
@@ -141,30 +143,49 @@ function createAccordionItemsByResults(name, result, index, total = 1) {
 
   const listItem = document.createElement("li");
   listItem.className = "editor__output-result-accordion";
-  // Warnings and the diff start expanded: a warning describes something that
-  // already affected the result, and the diff is the answer to what the policy
-  // did. A collapsed warning stays collapsed -- see getWarningsOpen.
-  const startsOpen = isWarning ? getWarningsOpen() : name === "diff";
+  // The decision, the warnings and the diff start expanded: the decision is the
+  // answer, a warning describes something that already affected it, and the
+  // diff is what the policy did. A collapsed warning stays collapsed -- see
+  // getWarningsOpen.
+  const startsOpen = isWarning
+    ? getWarningsOpen()
+    : name === "diff" || name === "decision";
   listItem.setAttribute("data-open", startsOpen ? "true" : "false");
-  listItem.onclick = (e) => {
-    // Only the header row toggles. The body is there to be read from, and
-    // ending a selection inside it must not collapse the section -- which for a
-    // warning would also switch off the remembered preference.
-    if (!e.target.closest(".result-accordion-content")) return;
+
+  const toggle = () => {
     const isAccordionOpen = listItem.getAttribute("data-open") === "true";
     listItem.setAttribute("data-open", isAccordionOpen ? "false" : "true");
+    accordionContent.setAttribute("aria-expanded", String(!isAccordionOpen));
     if (isWarning) setWarningsOpen(!isAccordionOpen);
   };
 
   const accordionContent = document.createElement("div");
   accordionContent.className = "result-accordion-content";
+  // The header row is the control, so it is the thing that takes focus and
+  // answers the keyboard. Only it toggles: the body is there to be read from,
+  // and ending a selection inside it must not collapse the section -- which for
+  // a warning would also switch off the remembered preference.
+  accordionContent.setAttribute("role", "button");
+  accordionContent.setAttribute("tabindex", "0");
+  accordionContent.setAttribute("aria-expanded", String(startsOpen));
+  accordionContent.onclick = (e) => {
+    // The copy button is inside the header and has its own action.
+    if (e.target.closest(".result-accordion-copy")) return;
+    toggle();
+  };
+  accordionContent.onkeydown = (e) => {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    e.preventDefault();
+    toggle();
+  };
   accordionContent.appendChild(createLabel(result, name, index, total));
   // The cost and the copy button share a right-hand group, so the label still
   // sits opposite them under the row's space-between.
   const actions = document.createElement("div");
   actions.className = "result-accordion-actions";
-  // A bare string has no cost of its own.
-  if (!isPlainResult(result)) {
+  // A bare string has no cost of its own, and neither has the decision: it is
+  // the conclusion the costs above it add up to, not an expression.
+  if (!isPlainResult(result) && name !== "decision") {
     const costSpan = document.createElement("span");
     costSpan.innerHTML = `Cost: ${result?.cost ?? "-"}`;
     actions.appendChild(costSpan);
@@ -178,6 +199,8 @@ function createAccordionItemsByResults(name, result, index, total = 1) {
 
   const expansibleContent = document.createElement("div");
   expansibleContent.className = "result-accordion-expansible-content";
+  expansibleContent.id = `result-body-${sectionCount++}`;
+  accordionContent.setAttribute("aria-controls", expansibleContent.id);
   // No wrapper element: most bodies are a <pre> or a <p>, and nesting a block
   // inside an inline <span> makes the browser split it into anonymous blocks.
   expansibleContent.innerHTML = html;

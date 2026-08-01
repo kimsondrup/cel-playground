@@ -96,8 +96,26 @@
   color: #e2b93d;
 }
 
+/* The label-sized use: the section's own colour on the collapsed card. */
 .editor__output-result-accordion .result-error {
   color: #e01e5a;
+}
+
+/* An error body is bulk text -- a CEL compile error is four lines with a source
+   excerpt and a caret -- and it is the most important thing on screen when it
+   appears. #e01e5a would be 2.6:1 on the expanded card's #33373d; this is
+   5.4:1. */
+.editor__output-result-accordion
+  .result-accordion-expansible-content
+  .result-error {
+  color: #ff8ba0;
+}
+
+/* The header row is a control, so it shows focus. */
+.editor__output-result-accordion .result-accordion-content:focus-visible {
+  outline: 2px solid #7aa2f7;
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 /* The cost and the copy button, right-aligned opposite the label. */
