@@ -30,7 +30,6 @@ import (
 	celplugin "k8s.io/apiserver/pkg/admission/plugin/cel"
 	"k8s.io/apiserver/pkg/admission/plugin/policy/mutating/patch"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
-	apiservercel "k8s.io/apiserver/pkg/cel"
 	"k8s.io/apiserver/pkg/cel/environment"
 	"sigs.k8s.io/structured-merge-diff/v6/typed"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -209,7 +208,6 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		s.mutations = append(s.mutations, result)
 		s.mutationScopes = append(s.mutationScopes, nil)
 		s.mutationFatal = append(s.mutationFatal, false)
-		s.mutationOverran = append(s.mutationOverran, false)
 
 		accessor, newPatcher, err := mutationPatcher(mutation)
 		if err != nil {
@@ -264,10 +262,11 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 			result.Cost = &expressionCost
 		}
 		if err != nil {
-			// A budget overrun reports no remaining budget, so there is no cost
-			// to show -- and it is the one failure the budget section exists
-			// for, which would otherwise say nothing.
-			s.mutationOverran[len(s.mutationOverran)-1] = errors.Is(err, apiservercel.ErrOutOfBudget)
+			// A mutation that overruns its budget reports no remaining budget,
+			// so result.Cost stays empty -- but celconfig.PerCallLimit caps any
+			// one expression at a tenth of the budget, so the only way to
+			// overrun is across variables, and those are in the scope and
+			// counted. The budget section sees the overrun through them.
 			setMutationError(result, err)
 			continue
 		}
@@ -286,7 +285,7 @@ func (s *evalSections) evaluateMutations(compiler *policyCompiler, inputs *evalI
 		// dispatcher returns those rather than collecting them, so they never
 		// reach the failurePolicy filter.
 		if objectFitsSchema {
-			if _, err := typeConverter.ObjectToTyped(patched); err != nil {
+			if _, err := typeConverter.ObjectToTyped(patched, typed.AllowDuplicates); err != nil {
 				s.mutationFatal[len(s.mutationFatal)-1] = true
 				setMutationError(result, fmt.Errorf(
 					"a cluster reads the patched object back against the %s schema and would refuse it: %w", gvk.Kind, err))

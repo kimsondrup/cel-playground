@@ -521,3 +521,89 @@ spec:
 		t.Errorf("the validating mode claims not to default, which it has no reason to:\n%s", response.NotSimulated)
 	}
 }
+
+// A mutation that spends more than its budget is abandoned by the apiserver and
+// the request fails. There is no remaining budget to subtract afterwards, so the
+// cost is unknown -- but the overrun is the one thing the budget section exists
+// to report, and reporting nothing was worse than reporting no number.
+func TestMutationReportsItsOwnBudgetOverrun(t *testing.T) {
+	// celconfig.PerCallLimit caps any single expression at 1,000,000, so the
+	// only way past the 10,000,000 budget is across variables. Sixteen of two
+	// authorizer checks each is about 11 million.
+	const variables = 16
+	check := func(verb string) string {
+		return fmt.Sprintf("string(authorizer.group('apps').resource('deployments').check('%s').allowed())", verb)
+	}
+	declarations, reads := "", make([]string, 0, variables)
+	for i := range variables {
+		declarations += fmt.Sprintf("  - name: v%d\n    expression: \"%s + %s\"\n",
+			i, check(fmt.Sprintf("a%d", i)), check(fmt.Sprintf("b%d", i)))
+		reads = append(reads, fmt.Sprintf("%q: variables.v%d", fmt.Sprintf("v%d", i), i))
+	}
+	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: MutatingAdmissionPolicy\nmetadata:\n  name: overrun\nspec:\n  failurePolicy: Fail\n  reinvocationPolicy: Never\n  variables:\n" + declarations +
+		"  mutations:\n  - patchType: ApplyConfiguration\n    applyConfiguration:\n      expression: >\n        Object{metadata: Object.metadata{annotations: {" + strings.Join(reads, ", ") + "}}}\n"
+
+	out, err := k8s.EvalMutatingAdmissionPolicy([]byte(policy), nil, readMapFile(t, "object.yaml"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.Mutations) != 1 || !response.Mutations[0].IsError {
+		t.Fatalf("the mutation was applied; this case no longer overruns the budget: %s", out)
+	}
+	if len(response.ExceededBudgets) != 1 {
+		t.Fatalf("got %d exceeded budgets, want one naming the mutation: %s", len(response.ExceededBudgets), out)
+	}
+	if got := *response.ExceededBudgets[0].Name; got != "mutations[0]" {
+		t.Errorf("the overrun is reported against %q, want mutations[0]", got)
+	}
+}
+
+// ApplyStructuredMergeDiff parses objects with typed.AllowDuplicates, so a
+// duplicate entry in an associative list is something the merge copes with, and
+// both probes here allow them too. A cluster refuses such an object -- but at
+// validation, for having two containers of one name, not at decoding, and the
+// playground does not validate objects at all. Reporting it as a schema
+// mismatch would name the wrong gate and switch off the patched-object
+// read-back for every mutation on the strength of it.
+func TestMutationToleratesADuplicateListEntry(t *testing.T) {
+	object := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.27
+      - name: nginx
+        image: nginx:1.28
+`
+	out, err := k8s.EvalMutatingAdmissionPolicy(
+		readMapFile(t, "applyconfig label policy.yaml"), nil, []byte(object), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EvalMutatingAdmissionPolicy() error: %v", err)
+	}
+	response := k8s.EvalResponse{}
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("json.Unmarshal() error: %v", err)
+	}
+	if len(response.Warnings) != 0 {
+		t.Errorf("a duplicate list entry was reported as a schema mismatch: %q", response.Warnings)
+	}
+	if response.Mutations[0].IsError {
+		t.Errorf("the mutation was refused: %s", *response.Mutations[0].Error)
+	}
+}
