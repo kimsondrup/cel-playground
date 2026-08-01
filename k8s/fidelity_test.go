@@ -726,3 +726,45 @@ func TestAnUncompilableMatchConditionHasNoClusterDecision(t *testing.T) {
 		})
 	}
 }
+
+// The Request tab is read strictly so that nothing it says is dropped in
+// silence. Two fields it can say that the attributes have only one slot for:
+// `subResource` and `requestSubResource`, which a cluster derives from one
+// value. Naming either one is naming the subresource.
+func TestRequestSubresourceIsNotDroppedWhicheverFieldNamesIt(t *testing.T) {
+	for _, field := range []string{"subResource", "requestSubResource"} {
+		t.Run(field, func(t *testing.T) {
+			request := "kind:\n  group: apps\n  version: v1\n  kind: Deployment\nresource:\n  group: apps\n  version: v1\n  resource: deployments\noperation: UPDATE\n" + field + ": scale\n"
+			policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: sub\nspec:\n  validations:\n    - expression: \"request.subResource == 'scale' && request.requestSubResource == 'scale'\"\n"
+			out, err := EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte(fidelityObject), nil, []byte(request), nil)
+			if err != nil {
+				t.Fatalf("EvalValidatingAdmissionPolicy() error: %v", err)
+			}
+			response := EvalResponse{}
+			if err := json.Unmarshal([]byte(out), &response); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v", err)
+			}
+			if response.Validations[0].IsError {
+				t.Fatalf("errored: %s", *response.Validations[0].Error)
+			}
+			if response.Validations[0].Result != true {
+				t.Errorf("the subresource named in %s did not reach the request", field)
+			}
+		})
+	}
+}
+
+// A Request tab whose `options` is not an object is a mistake worth reporting.
+// Substituting the empty options for the operation would answer a question the
+// user did not ask.
+func TestMalformedRequestOptionsAreReported(t *testing.T) {
+	request := "operation: CREATE\noptions: [1, 2, 3]\n"
+	policy := "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingAdmissionPolicy\nmetadata:\n  name: opts\nspec:\n  validations:\n    - expression: \"true\"\n"
+	_, err := EvalValidatingAdmissionPolicy([]byte(policy), nil, []byte(fidelityObject), nil, []byte(request), nil)
+	if err == nil {
+		t.Fatal("a list was accepted as the request's options")
+	}
+	if !strings.Contains(err.Error(), "options") {
+		t.Errorf("error = %q, want it to name the field", err)
+	}
+}
