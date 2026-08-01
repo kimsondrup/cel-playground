@@ -24,12 +24,15 @@ import (
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 )
 
 // MarkerLabel is the label the readiness probes key off. Test objects must
@@ -130,6 +133,16 @@ func (o *Oracle) MappingFor(obj *unstructured.Unstructured) (schema.GroupVersion
 // NoneOnDryRun, which the oracle's webhooks do), but persists nothing -- so the
 // same object name can be replayed across cases without cleanup.
 func (o *Oracle) DryRunCreate(ctx context.Context, obj *unstructured.Unstructured) (Decision, error) {
+	return o.DryRunCreateAs(ctx, o.Dynamic, obj)
+}
+
+// DryRunCreateAs is DryRunCreate performed through a caller-supplied client,
+// which is how a request is made as somebody other than the envtest admin.
+// Pair it with ImpersonatingClient: the apiserver then authenticates the
+// request as that user, and its own authorizer -- the one a matchCondition's
+// `authorizer` variable talks to -- answers for that user rather than for
+// system:masters.
+func (o *Oracle) DryRunCreateAs(ctx context.Context, client dynamic.Interface, obj *unstructured.Unstructured) (Decision, error) {
 	gvr, namespaced, err := o.MappingFor(obj)
 	if err != nil {
 		return Decision{}, err
@@ -140,7 +153,7 @@ func (o *Oracle) DryRunCreate(ctx context.Context, obj *unstructured.Unstructure
 		obj = obj.DeepCopy()
 		obj.SetNamespace(ns)
 	}
-	ri := o.Dynamic.Resource(gvr)
+	ri := client.Resource(gvr)
 	opts := metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}
 	var createErr error
 	if namespaced {
@@ -149,6 +162,23 @@ func (o *Oracle) DryRunCreate(ctx context.Context, obj *unstructured.Unstructure
 		_, createErr = ri.Create(ctx, obj, opts)
 	}
 	return decisionFrom(createErr), nil
+}
+
+// ImpersonatingClient returns a dynamic client that sends
+// Impersonate-User/-Group/-Uid/-Extra headers. The envtest admin is in
+// system:masters, which the apiserver's privileged-group authorizer lets
+// impersonate anyone, so no extra grant is needed for the impersonation itself
+// -- the impersonated user still needs its own grants for the request.
+func (o *Oracle) ImpersonatingClient(imp rest.ImpersonationConfig) (dynamic.Interface, error) {
+	cfg := rest.CopyConfig(o.Cfg)
+	cfg.QPS = 200
+	cfg.Burst = 400
+	cfg.Impersonate = imp
+	client, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("building an impersonating client for %q: %w", imp.UserName, err)
+	}
+	return client, nil
 }
 
 // CreatePolicyAndBinding installs a policy plus a binding that enforces it with
@@ -296,6 +326,12 @@ func (o *Oracle) CreateRaw(ctx context.Context, obj runtime.Object) error {
 		return err
 	case *admissionregistrationv1.ValidatingWebhookConfiguration:
 		_, err := o.Clientset.AdmissionregistrationV1().ValidatingWebhookConfigurations().Create(ctx, t, metav1.CreateOptions{})
+		return err
+	case *rbacv1.ClusterRole:
+		_, err := o.Clientset.RbacV1().ClusterRoles().Create(ctx, t, metav1.CreateOptions{})
+		return err
+	case *rbacv1.ClusterRoleBinding:
+		_, err := o.Clientset.RbacV1().ClusterRoleBindings().Create(ctx, t, metav1.CreateOptions{})
 		return err
 	default:
 		return fmt.Errorf("CreateRaw does not handle %T", obj)

@@ -63,7 +63,24 @@ go test -tags oracle -run TestAcceptance      ./... -v   # registry validation +
 go test -tags oracle -run TestWebhook         ./... -v   # real webhook invocation
 go test -tags oracle -run TestCost            ./... -v   # cost budget behaviour, ~25s
 go test -tags oracle -run TestPlaygroundVsUpstream ./... -v  # the differential test
+go test -tags oracle -run TestWebhookParityWithUpstream ./... -v  # webhook matchConditions vs a cluster
 ```
+
+`TestWebhookParityWithUpstream` is the webhook half of the differential test. It
+drives the repo's own `k8s/testdata/webhook` fixtures through `k8s.EvalWebhook`,
+turns the per-condition results into the call/skip/reject decision upstream's
+`matchconditions.(*matcher).Match` would make, and checks it against a cluster
+that was handed the same configuration and object. The fixtures' RBAC tab is
+created on the cluster for real and the request is made as the user the request
+tab names, via impersonation from the envtest admin's `system:masters` — so the
+apiserver's own RBAC authorizer, not a simulation of it, answers
+`authorizer...check("breakglass").allowed()`.
+
+Each fixture webhook is registered three times: as itself, as a
+matchCondition-free twin with identical rules, and alongside one catch-all. The
+twin separates "the matchConditions said no" from "the rules never matched this
+object", and the catch-all is the per-request proof that the configuration was
+live — without them a webhook that is never dialled looks like a pass.
 
 Timings on this machine: control plane start ~2.0–2.5 s (once per package, shared
 via `TestMain`); each VAP case ~1 s, dominated by waiting for the admission
